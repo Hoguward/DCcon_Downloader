@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Downloaded dccon content (사용자 데이터 — 레포에 포함하지 않음)
+dccon_downloaded/
+../dccon_downloaded/
+
+# 환경변수/시크릿
+.env
+.env.local
+*.key
