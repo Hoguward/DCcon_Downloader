@@ -74,7 +74,43 @@ HEADERS = {
 
 INVALID_FN_CHARS = re.compile(r'[\\/:*?"<>|]')
 THUMB_SIZE = (150, 150)
-GRID_COLS = 5
+GRID_COLS = 5           # 카드 그리드 최소/기본 열 수
+CARD_WIDTH = 190        # 카드 1개가 차지하는 대략적인 폭(px) - 열 수 동적 계산용
+PREVIEW_CELL_WIDTH = 120  # 상세창 미리보기 셀 폭(px) - 열 수 동적 계산용
+
+
+def calc_cols(width: int, item_width: int, min_cols: int = 1) -> int:
+    """가용 폭(width)에 아이템 폭(item_width)이 몇 개 들어가는지 계산."""
+    return max(min_cols, width // item_width)
+
+
+def bind_mousewheel(canvas: tk.Canvas):
+    """마우스 포인터 아래에 있는 canvas만 휠 스크롤되도록 바인딩.
+
+    <Enter>/<Leave> 시점에 bind_all을 걸고 해제하는 방식은, 상세창이 뜨는
+    순간처럼 마우스가 실제로는 이동하지 않았는데 그 아래에 새 위젯이
+    나타나는 경우 <Enter>가 발생하지 않아 스크롤이 먹통이 되는 문제가
+    있었다. 대신 canvas마다 root에 전역으로 휠 이벤트를 걸어두되, 이벤트가
+    들어올 때마다 event.widget에서 부모를 타고 올라가며 "지금 이 캔버스에
+    속한 위젯 위에서 발생했는지"를 판별해, 맞을 때만 그 캔버스를 스크롤한다.
+    """
+    alive = {"value": True}
+
+    def _on_wheel(e):
+        if not alive["value"]:
+            return
+        widget = e.widget
+        while widget is not None:
+            if widget is canvas:
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+                return
+            widget = getattr(widget, "master", None)
+
+    def _on_destroy(_e=None):
+        alive["value"] = False
+
+    canvas.bind_all("<MouseWheel>", _on_wheel, add="+")
+    canvas.bind("<Destroy>", _on_destroy, add="+")
 
 def _app_dir() -> str:
     """프로그램(스크립트 또는 .exe)이 실제 위치한 폴더를 반환.
@@ -283,21 +319,23 @@ class DcconApp(tk.Tk):
         self.title("DCcon Downloader (Python GUI)")
         self.geometry("1100x720")
         self.minsize(900, 600)
+        self.maxsize(self.winfo_screenwidth(), self.winfo_screenheight())
 
         self.api = DcconAPI()
         self.executor = ThreadPoolExecutor(max_workers=8)
         self.current_items = []
+        self._show_pager = True
         self.thumb_refs = {}      # 카드 썸네일 ImageTk 참조 보관
         self.preview_refs = []    # 상세창 이미지 참조 보관
         self.download_dir = tk.StringVar(value=DEFAULT_DOWNLOAD_DIR)
-        self.mode = tk.StringVar(value="hot")        # hot | new | search | top
+        self.mode = tk.StringVar(value="new")        # new | search | top
         self.period = tk.StringVar(value="day")      # day | week (top용)
         self.page = 1
         self.last_page = 1
         self.last_search = ""
 
         self._build_ui()
-        self.after(100, lambda: self.load_list("hot", 1))
+        self.after(100, lambda: self.load_list("new", 1))
 
     # ---------- UI 구성 ----------
     def _build_ui(self):
@@ -314,8 +352,7 @@ class DcconApp(tk.Tk):
         ttk.Button(top, text="일간 인기", command=lambda: self.load_top("day")).pack(side="left")
         ttk.Button(top, text="주간 인기", command=lambda: self.load_top("week")).pack(side="left", padx=(4, 12))
 
-        ttk.Button(top, text="HOT", command=lambda: self.load_list("hot", 1)).pack(side="left")
-        ttk.Button(top, text="NEW", command=lambda: self.load_list("new", 1)).pack(side="left", padx=(4, 12))
+        ttk.Button(top, text="NEW", command=lambda: self.load_list("new", 1)).pack(side="left", padx=(0, 12))
 
         ttk.Label(top, text="검색:").pack(side="left")
         self.search_var = tk.StringVar()
@@ -368,13 +405,21 @@ class DcconApp(tk.Tk):
         self.grid_frame = ttk.Frame(self.canvas)
         self.canvas_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
         self.grid_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width))
-        # 마우스 휠
-        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        self.grid_cols = GRID_COLS
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+        bind_mousewheel(self.canvas)
 
         # 상태바
         self.status_var = tk.StringVar(value="준비")
         ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(10, 4)).pack(side="bottom", fill="x")
+
+    def _on_canvas_resize(self, event):
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+        new_cols = calc_cols(event.width, CARD_WIDTH, min_cols=1)
+        if new_cols != self.grid_cols:
+            self.grid_cols = new_cols
+            if self.current_items:
+                self._show_items(self.current_items, self._show_pager)
 
     # ---------- 헬퍼 ----------
     def set_status(self, msg):
@@ -409,11 +454,11 @@ class DcconApp(tk.Tk):
             messagebox.showerror("열기 실패", str(e))
 
     # ---------- 목록 로딩 ----------
-    def clear_grid(self):
+    def clear_grid(self, reset_scroll: bool = True):
         for w in self.grid_frame.winfo_children():
             w.destroy()
-        self.thumb_refs.clear()
-        self.canvas.yview_moveto(0)
+        if reset_scroll:
+            self.canvas.yview_moveto(0)
 
     def update_nav(self, show_pager=True):
         self.page_lbl.config(text=f"{self.page} / {self.last_page}")
@@ -426,6 +471,7 @@ class DcconApp(tk.Tk):
         self.mode.set("top"); self.period.set(period); self.page = 1; self.last_page = 1
         self.title_lbl.config(text=f"{'일간' if period=='day' else '주간'} 인기 디시콘")
         self.set_status("불러오는 중...")
+        self.thumb_refs.clear()
         self.clear_grid()
         threading.Thread(target=self._fetch_top, args=(period,), daemon=True).start()
 
@@ -447,8 +493,9 @@ class DcconApp(tk.Tk):
 
     def load_list(self, kind, page):
         self.mode.set(kind); self.page = page
-        self.title_lbl.config(text="HOT 디시콘" if kind == "hot" else "NEW 디시콘")
+        self.title_lbl.config(text="NEW 디시콘")
         self.set_status(f"{kind.upper()} {page}페이지 불러오는 중...")
+        self.thumb_refs.clear()
         self.clear_grid()
         threading.Thread(target=self._fetch_list, args=(kind, page), daemon=True).start()
 
@@ -467,6 +514,7 @@ class DcconApp(tk.Tk):
         self.mode.set("search"); self.last_search = kw; self.page = 1
         self.title_lbl.config(text=f'검색: "{kw}"')
         self.set_status("검색 중...")
+        self.thumb_refs.clear()
         self.clear_grid()
         threading.Thread(target=self._fetch_search, args=(kw, 1), daemon=True).start()
 
@@ -492,24 +540,27 @@ class DcconApp(tk.Tk):
 
     def _goto_page(self, p):
         mode = self.mode.get()
-        if mode in ("hot", "new"):
+        if mode == "new":
             self.load_list(mode, p)
         elif mode == "search":
             self.page = p
             self.set_status(f'"{self.last_search}" {p}페이지 검색 중...')
+            self.thumb_refs.clear()
             self.clear_grid()
             threading.Thread(target=self._fetch_search, args=(self.last_search, p), daemon=True).start()
 
     # ---------- 카드 렌더링 ----------
     def _show_items(self, items, show_pager):
         self.current_items = items
+        self._show_pager = show_pager
         self.update_nav(show_pager)
+        self.clear_grid(reset_scroll=False)
         if not items:
             ttk.Label(self.grid_frame, text="결과가 없습니다.", padding=20).grid(row=0, column=0)
             self.set_status("결과 없음")
             return
         for i, it in enumerate(items):
-            r, c = divmod(i, GRID_COLS)
+            r, c = divmod(i, self.grid_cols)
             card = self._make_card(self.grid_frame, it)
             card.grid(row=r, column=c, padx=8, pady=8, sticky="n")
         self.set_status(f"{len(items)}개 표시")
@@ -526,13 +577,18 @@ class DcconApp(tk.Tk):
             w.bind("<Button-1>", lambda e, it=item: self.open_detail(it))
             w.configure(cursor="hand2")
 
+        cached = self.thumb_refs.get(item["img"])
+        if cached is not None:
+            thumb.configure(image=cached, text="")
+            return frame
+
         def load_thumb():
             try:
                 data = self.api.fetch_thumb(item["img"])
                 im = Image.open(io.BytesIO(data))
                 im.thumbnail(THUMB_SIZE)
                 tkim = ImageTk.PhotoImage(im)
-                self.thumb_refs[id(thumb)] = tkim
+                self.thumb_refs[item["img"]] = tkim
                 def apply():
                     if thumb.winfo_exists():
                         thumb.configure(image=tkim, text="")
@@ -553,11 +609,17 @@ class DetailDialog(tk.Toplevel):
         self.master_app = master
         self.item = item
         self.title(item.get("title") or "디시콘")
-        self.geometry("760x620")
+        self.geometry("820x640")
+        self.minsize(480, 400)
         self.transient(master)
         self.detail = None
         self.image_refs = []
         self.cancel_flag = threading.Event()
+        self.preview_urls = []
+        self.preview_cols = 0
+        self.preview_canvas = None
+        self.preview_inner = None
+        self.preview_cache = {}   # url -> ImageTk.PhotoImage, 리사이즈 재배치 시 재다운로드 방지
 
         ttk.Label(self, text="불러오는 중...", padding=20).pack()
         threading.Thread(target=self._load, daemon=True).start()
@@ -601,19 +663,41 @@ class DetailDialog(tk.Toplevel):
         inner = ttk.Frame(canvas)
         cwin = canvas.create_window((0, 0), window=inner, anchor="nw")
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(cwin, width=e.width))
+        canvas.bind("<Configure>", lambda e: self._on_preview_resize(e, cwin))
+        bind_mousewheel(canvas)
 
-        urls = self.detail["urls"]
-        cols = 6
-        for i, u in enumerate(urls):
+        self.preview_canvas = canvas
+        self.preview_inner = inner
+        self.preview_urls = self.detail["urls"]
+        self._layout_preview_grid()
+
+    def _on_preview_resize(self, event, cwin):
+        self.preview_canvas.itemconfig(cwin, width=event.width)
+        new_cols = calc_cols(event.width, PREVIEW_CELL_WIDTH, min_cols=1)
+        if new_cols != self.preview_cols:
+            self._layout_preview_grid(new_cols)
+
+    def _layout_preview_grid(self, cols: int = None):
+        if cols is None:
+            width = self.preview_canvas.winfo_width()
+            cols = calc_cols(width, PREVIEW_CELL_WIDTH, min_cols=1)
+        self.preview_cols = cols
+        for w in self.preview_inner.winfo_children():
+            w.destroy()
+        for i, u in enumerate(self.preview_urls):
             r, c = divmod(i, cols)
-            cell = ttk.Frame(inner, padding=4)
+            cell = ttk.Frame(self.preview_inner, padding=4)
             cell.grid(row=r, column=c, sticky="n")
             lbl = ttk.Label(cell, text=f"#{i}")
             lbl.pack()
             self._load_preview(u, lbl)
 
     def _load_preview(self, url, label):
+        cached = self.preview_cache.get(url)
+        if cached is not None:
+            label.configure(image=cached, text="")
+            return
+
         def task():
             try:
                 data = self.master_app.api.fetch_thumb(url)
@@ -621,6 +705,7 @@ class DetailDialog(tk.Toplevel):
                 im.thumbnail((100, 100))
                 tkim = ImageTk.PhotoImage(im)
                 self.image_refs.append(tkim)
+                self.preview_cache[url] = tkim
                 self.after(0, lambda: label.winfo_exists() and label.configure(image=tkim, text=""))
             except Exception:
                 pass
