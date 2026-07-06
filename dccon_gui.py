@@ -74,7 +74,16 @@ HEADERS = {
 
 INVALID_FN_CHARS = re.compile(r'[\\/:*?"<>|]')
 THUMB_SIZE = (150, 150)
+THUMB_WORKERS = 16      # 썸네일/미리보기 동시 다운로드 스레드 수
+THUMB_CACHE_MAX = 800   # 메모리에 유지할 썸네일 최대 개수 (초과 시 오래된 것부터 제거)
 GRID_COLS = 5           # 카드 그리드 최소/기본 열 수
+
+# 색상 팔레트 (카드/호버 등 UI 공용)
+COL_BG = "#ffffff"
+COL_BORDER = "#e3e3e3"
+COL_ACCENT = "#4a90d9"
+COL_HOVER_BG = "#f5f8ff"
+COL_THUMB_BG = "#f4f4f4"
 CARD_WIDTH = 190        # 카드 1개가 차지하는 대략적인 폭(px) - 열 수 동적 계산용
 PREVIEW_CELL_WIDTH = 120  # 상세창 미리보기 셀 폭(px) - 열 수 동적 계산용
 
@@ -102,7 +111,11 @@ def bind_mousewheel(canvas: tk.Canvas):
         widget = e.widget
         while widget is not None:
             if widget is canvas:
-                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+                # 콘텐츠가 뷰포트보다 길 때만 스크롤. 짧을 때 스크롤하면
+                # 카드가 아래로 밀려나 빈 공간이 생기는 버그가 있었다.
+                bbox = canvas.bbox("all")
+                if bbox and (bbox[3] - bbox[1]) > canvas.winfo_height():
+                    canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
                 return
             widget = getattr(widget, "master", None)
 
@@ -111,6 +124,23 @@ def bind_mousewheel(canvas: tk.Canvas):
 
     canvas.bind_all("<MouseWheel>", _on_wheel, add="+")
     canvas.bind("<Destroy>", _on_destroy, add="+")
+
+
+def update_scrollregion(canvas: tk.Canvas):
+    """scrollregion 을 콘텐츠 크기에 맞추고, 콘텐츠가 뷰포트보다 짧으면
+    스크롤 위치를 맨 위로 고정한다.
+
+    콘텐츠(카드 한 줄 등)가 캔버스보다 짧은데도 이전 스크롤 위치가 남아
+    있으면 카드가 아래로 밀려 보이는 문제가 있었다. 콘텐츠가 짧을 때는
+    항상 맨 위(0)로 되돌려 이 현상을 막는다.
+    """
+    bbox = canvas.bbox("all")
+    if not bbox:
+        return
+    canvas.configure(scrollregion=bbox)
+    if (bbox[3] - bbox[1]) <= canvas.winfo_height():
+        canvas.yview_moveto(0)
+
 
 def _app_dir() -> str:
     """프로그램(스크립트 또는 .exe)이 실제 위치한 폴더를 반환.
@@ -180,6 +210,27 @@ class DcconAPI:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        # 커넥션 풀 확대 + 재시도.
+        # 기본 HTTPAdapter의 pool_maxsize(10)는 썸네일을 동시에 많이 받을 때
+        # 병목이 된다. 워커 수(THUMB_WORKERS)에 맞춰 풀을 키워 keep-alive
+        # 커넥션을 재사용하고, 일시적 5xx/429 에는 짧게 재시도한다.
+        from requests.adapters import HTTPAdapter
+        try:
+            from urllib3.util.retry import Retry
+            retries = Retry(
+                total=2, connect=2, read=2, backoff_factor=0.3,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=frozenset({"GET", "POST"}),
+            )
+        except Exception:
+            retries = 2
+        adapter = HTTPAdapter(
+            pool_connections=THUMB_WORKERS,
+            pool_maxsize=THUMB_WORKERS * 2,
+            max_retries=retries,
+        )
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     def get_top5(self, kind: str):
         """kind in {'day','week'}. JSONP 응답에서 배열만 추출."""
@@ -322,7 +373,7 @@ class DcconApp(tk.Tk):
         self.maxsize(self.winfo_screenwidth(), self.winfo_screenheight())
 
         self.api = DcconAPI()
-        self.executor = ThreadPoolExecutor(max_workers=8)
+        self.executor = ThreadPoolExecutor(max_workers=THUMB_WORKERS)
         self.current_items = []
         self._show_pager = True
         self.thumb_refs = {}      # 카드 썸네일 ImageTk 참조 보관
@@ -333,9 +384,29 @@ class DcconApp(tk.Tk):
         self.page = 1
         self.last_page = 1
         self.last_search = ""
+        self._did_initial_fit = False   # 첫 로딩 후 창 높이를 콘텐츠에 맞추는 1회성 플래그
 
         self._build_ui()
+        self._bind_shortcuts()
         self.after(100, lambda: self.load_list("new", 1))
+
+    def _bind_shortcuts(self):
+        def focus_search(_e=None):
+            self.search_entry.focus_set()
+            self.search_entry.select_range(0, "end")
+            return "break"
+        self.bind_all("<Control-f>", focus_search)
+        self.bind_all("<F5>", lambda e: self.reload_current())
+
+    def reload_current(self):
+        """현재 보고 있는 화면(모드/페이지)을 그대로 다시 불러온다."""
+        mode = self.mode.get()
+        if mode == "top":
+            self.load_top(self.period.get())
+        elif mode == "search" and self.last_search:
+            self._goto_page(self.page)
+        else:
+            self.load_list("new", self.page)
 
     # ---------- UI 구성 ----------
     def _build_ui(self):
@@ -352,13 +423,16 @@ class DcconApp(tk.Tk):
         ttk.Button(top, text="일간 인기", command=lambda: self.load_top("day")).pack(side="left")
         ttk.Button(top, text="주간 인기", command=lambda: self.load_top("week")).pack(side="left", padx=(4, 12))
 
-        ttk.Button(top, text="NEW", command=lambda: self.load_list("new", 1)).pack(side="left", padx=(0, 12))
+        ttk.Button(top, text="NEW", command=lambda: self.load_list("new", 1)).pack(side="left", padx=(0, 4))
+        ttk.Button(top, text="⟳ 새로고침", command=self.reload_current).pack(side="left", padx=(0, 12))
 
         ttk.Label(top, text="검색:").pack(side="left")
         self.search_var = tk.StringVar()
         ent = ttk.Entry(top, textvariable=self.search_var, width=22)
         ent.pack(side="left", padx=4)
         ent.bind("<Return>", lambda e: self.do_search())
+        ent.bind("<Escape>", lambda e: (self.search_var.set(""), self.focus_set()))
+        self.search_entry = ent
         ttk.Button(top, text="찾기", command=self.do_search).pack(side="left")
 
         ttk.Label(top, text="  저장 폴더:").pack(side="left", padx=(20, 4))
@@ -397,14 +471,16 @@ class DcconApp(tk.Tk):
         body = ttk.Frame(self)
         body.pack(side="top", fill="both", expand=True, padx=10, pady=8)
         self.canvas = tk.Canvas(body, highlightthickness=0)
-        vbar = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=vbar.set)
+        self.vbar = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
-        vbar.pack(side="right", fill="y")
+        self.vbar.pack(side="right", fill="y")
 
         self.grid_frame = ttk.Frame(self.canvas)
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
-        self.grid_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        # anchor="n": 그리드를 캔버스 가로 중앙에 배치 (좌우 여백 균등).
+        # 실제 중앙 x 좌표는 _on_canvas_resize 에서 캔버스 폭에 맞춰 갱신한다.
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor="n")
+        self.grid_frame.bind("<Configure>", lambda e: self._on_grid_configure())
         self.grid_cols = GRID_COLS
         self.canvas.bind("<Configure>", self._on_canvas_resize)
         bind_mousewheel(self.canvas)
@@ -414,17 +490,51 @@ class DcconApp(tk.Tk):
         ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(10, 4)).pack(side="bottom", fill="x")
 
     def _on_canvas_resize(self, event):
-        self.canvas.itemconfig(self.canvas_window, width=event.width)
+        # 그리드를 캔버스 가로 중앙으로 이동 (그리드 폭은 콘텐츠에 맞게 자연 크기 유지).
+        self.canvas.coords(self.canvas_window, event.width / 2, 0)
         new_cols = calc_cols(event.width, CARD_WIDTH, min_cols=1)
         if new_cols != self.grid_cols:
             self.grid_cols = new_cols
             if self.current_items:
-                self._show_items(self.current_items, self._show_pager)
+                self._show_items(self.current_items, self._show_pager, keep_scroll=True)
+
+    def _on_grid_configure(self):
+        update_scrollregion(self.canvas)
+        self._sync_scrollbar()
+
+    def _sync_scrollbar(self):
+        """콘텐츠가 뷰포트보다 길 때만 세로 스크롤바를 표시.
+
+        스크롤이 필요 없을 때 스크롤바를 숨겨 오른쪽에 남는 빈 여백을
+        없애고 좌우 여백을 대칭으로 만든다.
+        """
+        bbox = self.canvas.bbox("all")
+        if not bbox:
+            return
+        need = (bbox[3] - bbox[1]) > self.canvas.winfo_height()
+        mapped = self.vbar.winfo_ismapped()
+        if need and not mapped:
+            self.vbar.pack(side="right", fill="y")
+        elif not need and mapped:
+            self.vbar.pack_forget()
 
     # ---------- 헬퍼 ----------
     def set_status(self, msg):
         self.status_var.set(msg)
         self.update_idletasks()
+
+    def _cache_thumb(self, key, img):
+        """썸네일 참조를 캐시에 저장하고 상한을 넘으면 오래된 것부터 제거.
+
+        dict는 삽입 순서를 보존하므로 앞쪽(=오래된) 항목부터 버린다.
+        참조를 유지해야 ImageTk 이미지가 GC 되지 않으므로 캐시가 곧
+        메모리 라이프타임 관리 역할도 겸한다.
+        """
+        self.thumb_refs[key] = img
+        if len(self.thumb_refs) > THUMB_CACHE_MAX:
+            drop = len(self.thumb_refs) - THUMB_CACHE_MAX
+            for k in list(self.thumb_refs)[:drop]:
+                self.thumb_refs.pop(k, None)
 
     def choose_dir(self):
         cur = self.download_dir.get()
@@ -471,7 +581,7 @@ class DcconApp(tk.Tk):
         self.mode.set("top"); self.period.set(period); self.page = 1; self.last_page = 1
         self.title_lbl.config(text=f"{'일간' if period=='day' else '주간'} 인기 디시콘")
         self.set_status("불러오는 중...")
-        self.thumb_refs.clear()
+        # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
         threading.Thread(target=self._fetch_top, args=(period,), daemon=True).start()
 
@@ -495,7 +605,7 @@ class DcconApp(tk.Tk):
         self.mode.set(kind); self.page = page
         self.title_lbl.config(text="NEW 디시콘")
         self.set_status(f"{kind.upper()} {page}페이지 불러오는 중...")
-        self.thumb_refs.clear()
+        # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
         threading.Thread(target=self._fetch_list, args=(kind, page), daemon=True).start()
 
@@ -514,7 +624,7 @@ class DcconApp(tk.Tk):
         self.mode.set("search"); self.last_search = kw; self.page = 1
         self.title_lbl.config(text=f'검색: "{kw}"')
         self.set_status("검색 중...")
-        self.thumb_refs.clear()
+        # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
         threading.Thread(target=self._fetch_search, args=(kw, 1), daemon=True).start()
 
@@ -545,12 +655,11 @@ class DcconApp(tk.Tk):
         elif mode == "search":
             self.page = p
             self.set_status(f'"{self.last_search}" {p}페이지 검색 중...')
-            self.thumb_refs.clear()
             self.clear_grid()
             threading.Thread(target=self._fetch_search, args=(self.last_search, p), daemon=True).start()
 
     # ---------- 카드 렌더링 ----------
-    def _show_items(self, items, show_pager):
+    def _show_items(self, items, show_pager, keep_scroll=False):
         self.current_items = items
         self._show_pager = show_pager
         self.update_nav(show_pager)
@@ -558,29 +667,120 @@ class DcconApp(tk.Tk):
         if not items:
             ttk.Label(self.grid_frame, text="결과가 없습니다.", padding=20).grid(row=0, column=0)
             self.set_status("결과 없음")
+            self.canvas.yview_moveto(0)
             return
         for i, it in enumerate(items):
             r, c = divmod(i, self.grid_cols)
             card = self._make_card(self.grid_frame, it)
             card.grid(row=r, column=c, padx=8, pady=8, sticky="n")
+        # 새 목록을 그렸으면 스크롤을 맨 위로. (창 크기 변경으로 인한
+        # 재배치일 때는 keep_scroll=True 로 현재 위치를 유지한다.)
+        if not keep_scroll:
+            self.canvas.yview_moveto(0)
+        # 첫 실행 시 카드가 화면 아래에서 잘리지 않도록 창 높이를 콘텐츠에
+        # 맞춰 한 번만 조정한다.
+        if not keep_scroll and not self._did_initial_fit:
+            self.after_idle(self._fit_window_to_content)
         self.set_status(f"{len(items)}개 표시")
 
+    def _fit_window_to_content(self):
+        """카드 그리드 전체가 세로로 보이도록 창 높이를 콘텐츠에 맞춘다.
+
+        - 썸네일 박스가 고정 크기라 이미지 로딩 전에도 높이가 안정적이다.
+        - 화면 높이를 넘지 않도록 상한을 둔다(작업표시줄/타이틀바 여유 포함).
+        - 최초 1회만 실행 — 이후 사용자가 창 크기를 바꾸면 존중한다.
+        """
+        if self._did_initial_fit:
+            return
+        self.update_idletasks()
+        canvas_h = self.canvas.winfo_height()
+        canvas_w = self.canvas.winfo_width()
+        if canvas_h <= 1 or canvas_w <= 1:
+            # 아직 레이아웃 전이면 잠시 후 재시도
+            self.after(50, self._fit_window_to_content)
+            return
+        self._did_initial_fit = True
+
+        content_h = self.grid_frame.winfo_reqheight()
+        content_w = self.grid_frame.winfo_reqwidth()
+        chrome_h = self.winfo_height() - canvas_h   # 툴바/페이저/상태바 등 캔버스 외 높이
+        # 가로 크롬에서 스크롤바 폭은 제외한다. 콘텐츠가 다 맞으면 스크롤바가
+        # 숨겨지므로, 포함하면 오른쪽에 그만큼 빈 여백이 남는다.
+        sb = 16 if self.vbar.winfo_ismapped() else 0
+        chrome_w = self.winfo_width() - canvas_w - sb
+
+        # 세로: 카드 전체 높이 + 약간의 여유
+        needed_h = chrome_h + content_h + 8
+        # 가로: 콘텐츠 폭 + 좌우 여백(각 20px). 현재 열 수가 유지되도록 넉넉히.
+        needed_w = chrome_w + content_w + 40
+
+        screen_h = self.winfo_screenheight()
+        screen_w = self.winfo_screenwidth()
+        target_h = max(int(min(needed_h, screen_h - 80)), 600)
+        target_w = max(int(min(needed_w, screen_w - 40)), 900)
+        self.geometry(f"{target_w}x{target_h}")
+
     def _make_card(self, parent, item):
-        frame = ttk.Frame(parent, padding=8, relief="solid", borderwidth=1)
-        thumb = ttk.Label(frame, text="(로딩 중)")
-        thumb.pack()
-        title = ttk.Label(frame, text=item["title"][:18], wraplength=160, justify="center", anchor="center")
-        title.pack(pady=(6, 0))
-        seller = ttk.Label(frame, text=item["nick_name"][:18], foreground="#888")
+        # tk.Frame + highlightthickness 로 테두리를 그려 호버 시 색만 바꿔
+        # 부드러운 강조 효과를 낸다 (ttk 테두리는 색 제어가 까다로움).
+        card = tk.Frame(parent, bg=COL_BG, bd=0,
+                        highlightthickness=1,
+                        highlightbackground=COL_BORDER, highlightcolor=COL_BORDER)
+        inner = tk.Frame(card, bg=COL_BG)
+        inner.pack(padx=8, pady=8)
+
+        # 고정 크기 썸네일 영역 — 이미지 로딩 전후로 카드 크기가 흔들리지 않음
+        thumb_box = tk.Frame(inner, width=THUMB_SIZE[0], height=THUMB_SIZE[1],
+                             bg=COL_THUMB_BG)
+        thumb_box.pack()
+        thumb_box.pack_propagate(False)
+        thumb = tk.Label(thumb_box, text="…", bg=COL_THUMB_BG, fg="#c4c4c4",
+                         font=("Segoe UI", 22))
+        thumb.pack(expand=True)
+
+        title = tk.Label(inner, text=item["title"][:24], bg=COL_BG, fg="#222",
+                         wraplength=THUMB_SIZE[0], justify="center",
+                         font=("Segoe UI", 9, "bold"))
+        title.pack(pady=(8, 0))
+        seller = tk.Label(inner, text=item["nick_name"][:24], bg=COL_BG, fg="#999",
+                          font=("Segoe UI", 8))
         seller.pack()
-        for w in (frame, thumb, title, seller):
+
+        widgets = (card, inner, thumb_box, thumb, title, seller)
+        for w in widgets:
             w.bind("<Button-1>", lambda e, it=item: self.open_detail(it))
             w.configure(cursor="hand2")
+
+        def _set_hover(on):
+            border = COL_ACCENT if on else COL_BORDER
+            bg = COL_HOVER_BG if on else COL_BG
+            card.configure(highlightbackground=border, highlightcolor=border, bg=bg)
+            inner.configure(bg=bg)
+            title.configure(bg=bg)
+            seller.configure(bg=bg)
+
+        def on_enter(_e):
+            _set_hover(True)
+
+        def on_leave(_e):
+            # 자식 위젯 사이를 오갈 때 발생하는 Leave 로 깜빡이지 않도록,
+            # 포인터가 실제로 카드 밖으로 나갔는지 확인.
+            x, y = card.winfo_pointerxy()
+            w = card.winfo_containing(x, y)
+            while w is not None:
+                if w is card:
+                    return
+                w = getattr(w, "master", None)
+            _set_hover(False)
+
+        for w in widgets:
+            w.bind("<Enter>", on_enter)
+            w.bind("<Leave>", on_leave)
 
         cached = self.thumb_refs.get(item["img"])
         if cached is not None:
             thumb.configure(image=cached, text="")
-            return frame
+            return card
 
         def load_thumb():
             try:
@@ -588,15 +788,18 @@ class DcconApp(tk.Tk):
                 im = Image.open(io.BytesIO(data))
                 im.thumbnail(THUMB_SIZE)
                 tkim = ImageTk.PhotoImage(im)
-                self.thumb_refs[item["img"]] = tkim
+                self._cache_thumb(item["img"], tkim)
                 def apply():
                     if thumb.winfo_exists():
                         thumb.configure(image=tkim, text="")
                 self.after(0, apply)
             except Exception:
-                pass
+                def fail():
+                    if thumb.winfo_exists():
+                        thumb.configure(text="✕", fg="#d0d0d0")
+                self.after(0, fail)
         self.executor.submit(load_thumb)
-        return frame
+        return card
 
     # ---------- 상세 / 다운로드 ----------
     def open_detail(self, item):
@@ -662,7 +865,7 @@ class DetailDialog(tk.Toplevel):
         vbar.pack(side="right", fill="y")
         inner = ttk.Frame(canvas)
         cwin = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        inner.bind("<Configure>", lambda e: update_scrollregion(canvas))
         canvas.bind("<Configure>", lambda e: self._on_preview_resize(e, cwin))
         bind_mousewheel(canvas)
 
