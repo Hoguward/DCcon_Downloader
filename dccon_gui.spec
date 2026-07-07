@@ -12,6 +12,7 @@ a = Analysis(
     hiddenimports=[
         # tkinter 관련 일부 환경에서 자동 인식 안 되는 모듈 보강
         'PIL._tkinter_finder',
+        'ttkbootstrap',
     ],
     hookspath=[],
     hooksconfig={},
