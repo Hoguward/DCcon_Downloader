@@ -32,7 +32,7 @@ try:
 except ImportError:
     _missing.append("beautifulsoup4")
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageSequence
 except ImportError:
     _missing.append("pillow")
 try:
@@ -889,6 +889,7 @@ class DetailDialog(tk.Toplevel):
         self.minsize(480, 400)
         self.transient(master)
         self._place_over_parent(master, 820, 640)
+        self.bind("<Escape>", lambda e: self.destroy())
         self.detail = None
         self.image_refs = []
         self.cancel_flag = threading.Event()
@@ -932,8 +933,13 @@ class DetailDialog(tk.Toplevel):
         for w in self.winfo_children():
             w.destroy()
 
-        head = ttk.Frame(self, padding=10); head.pack(fill="x")
-        ttk.Label(head, text=self.detail["title"], font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        # 제목 파란 바 (메인 헤더와 동일 톤)
+        titlebar = tb.Frame(self, bootstyle="primary")
+        titlebar.pack(fill="x")
+        tb.Label(titlebar, text=self.detail["title"], bootstyle="inverse-primary",
+                 font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=12, pady=8)
+
+        head = ttk.Frame(self, padding=(12, 8)); head.pack(fill="x")
         ttk.Label(head, text=self.detail["seller"], foreground="#555").pack(anchor="w")
         if self.detail["tags"]:
             ttk.Label(head, text="태그: " + self.detail["tags"], foreground="#888").pack(anchor="w")
@@ -1053,21 +1059,72 @@ class DetailDialog(tk.Toplevel):
     def _load_preview(self, url, label):
         cached = self.preview_cache.get(url)
         if cached is not None:
-            label.configure(image=cached, text="")
+            self._apply_preview(label, cached)
             return
 
         def task():
             try:
                 data = self.master_app.api.fetch_thumb(url)
-                im = Image.open(io.BytesIO(data))
-                im.thumbnail((100, 100))
-                tkim = ImageTk.PhotoImage(im)
-                self.image_refs.append(tkim)
-                self.preview_cache[url] = tkim
-                self.after(0, lambda: label.winfo_exists() and label.configure(image=tkim, text=""))
+                entry = self._build_preview_entry(data)
+                self.preview_cache[url] = entry
+                self.after(0, lambda: self._apply_preview(label, entry))
             except Exception:
                 pass
         self.master_app.executor.submit(task)
+
+    def _build_preview_entry(self, data):
+        """미리보기용 이미지 엔트리 생성.
+
+        - 정적: ("static", PhotoImage)
+        - 움짤(GIF 다중 프레임): ("anim", [PhotoImage...], [duration_ms...])
+        """
+        im = Image.open(io.BytesIO(data))
+        animated = getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1
+        if not animated:
+            frame = im.convert("RGBA")
+            frame.thumbnail((100, 100))
+            ph = ImageTk.PhotoImage(frame)
+            self.image_refs.append(ph)
+            return ("static", ph)
+
+        frames, durations = [], []
+        for fr in ImageSequence.Iterator(im):
+            f = fr.convert("RGBA")
+            f.thumbnail((100, 100))
+            ph = ImageTk.PhotoImage(f)
+            self.image_refs.append(ph)
+            frames.append(ph)
+            # 너무 빠른 프레임은 40ms 하한으로 (일부 GIF은 duration=0)
+            durations.append(max(40, int(fr.info.get("duration", 100) or 100)))
+        return ("anim", frames, durations)
+
+    def _apply_preview(self, label, entry):
+        """엔트리를 라벨에 적용. 움짤이면 프레임을 순환 재생한다."""
+        if not label.winfo_exists():
+            return
+        # 이전 애니메이션 정지 (리사이즈 재배치 등)
+        job = getattr(label, "_anim_job", None)
+        if job is not None:
+            try:
+                label.after_cancel(job)
+            except Exception:
+                pass
+            label._anim_job = None
+
+        if entry[0] == "static":
+            label.configure(image=entry[1], text="")
+            return
+
+        frames, durations = entry[1], entry[2]
+
+        def step(i=0):
+            if not label.winfo_exists():
+                return
+            label.configure(image=frames[i], text="")
+            nxt = (i + 1) % len(frames)
+            label._anim_job = label.after(durations[i], lambda: step(nxt))
+
+        step(0)
 
     def start_download(self):
         if not self.detail:
@@ -1099,12 +1156,24 @@ class DetailDialog(tk.Toplevel):
         threading.Thread(target=task, daemon=True).start()
 
     def _on_finish(self, out, failed):
-        if failed:
-            messagebox.showwarning("일부 실패",
-                f"실패한 인덱스: {failed}\n저장 위치: {out}", parent=self)
-        else:
-            messagebox.showinfo("완료", f"{out}\n으로 저장되었습니다.", parent=self)
         self.master_app.set_status(f"완료: {out}")
+        if failed:
+            msg = f"일부 실패 (실패 인덱스: {failed})\n저장 위치:\n{out}\n\n폴더를 열까요?"
+        else:
+            msg = f"저장 완료\n{out}\n\n폴더를 열까요?"
+        if messagebox.askyesno("다운로드 완료", msg, parent=self):
+            self._open_folder(out)
+
+    def _open_folder(self, path):
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            messagebox.showerror("열기 실패", str(e), parent=self)
 
 
 # ---------- 진입점 ----------
