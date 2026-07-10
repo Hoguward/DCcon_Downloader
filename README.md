@@ -25,7 +25,6 @@
 2. `dccon_gui.py` 더블클릭
 3. 최초 실행 시 필요한 패키지(`requests`, `beautifulsoup4`, `pillow`, `ttkbootstrap`)가 없으면 안내가 뜹니다. `pip install requests beautifulsoup4 pillow ttkbootstrap` 후 다시 실행하세요.
 
-
 ---
 
 ## 원본 대비 개선점
@@ -43,7 +42,6 @@
 | 마지막 업데이트 | 2019년 12월 | 진행 중 |
 
 원본의 핵심 버그는 `Content-Disposition` 헤더에서 파일명을 추출할 때 양쪽 따옴표(`"`를 제거하지 않은 것입니다. 서버가 `filename="icon_31.gif"` 형식으로 응답할 때 따옴표까지 파일명에 포함되어 Windows에서 ENOENT가 발생했습니다 (Windows는 `"`를 파일명에 허용하지 않음).
-
 
 ---
 
