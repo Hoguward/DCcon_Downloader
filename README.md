@@ -23,8 +23,6 @@
 
 원본의 핵심 버그는 `Content-Disposition` 헤더에서 파일명을 추출할 때 양쪽 따옴표(`"`를 제거하지 않은 것입니다. 서버가 `filename="icon_31.gif"` 형식으로 응답할 때 따옴표까지 파일명에 포함되어 Windows에서 ENOENT가 발생했습니다 (Windows는 `"`를 파일명에 허용하지 않음).
 
-버전별 상세 변경 이력은 [VERSIONING.md](./VERSIONING.md)를 참고하세요.
-
 ---
 
 ## 빠른 시작
