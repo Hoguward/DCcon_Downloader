@@ -1,5 +1,9 @@
 # DCcon Downloader (Python GUI)
 
+[![Downloads](https://img.shields.io/github/downloads/Hoguward/DCcon_Downloader/total?color=blue)](../../releases)
+[![Latest Release](https://img.shields.io/github/v/release/Hoguward/DCcon_Downloader?color=blue)](../../releases/latest)
+[![License](https://img.shields.io/github/license/Hoguward/DCcon_Downloader?color=blue)](./LICENSE)
+
 디시인사이드 디시콘을 일괄 다운로드하는 한글 데스크톱 프로그램입니다.
 [base4base/DCcon-Downloader](https://github.com/base4base/DCcon-Downloader)에서 영감을 받아 Python으로 다시 작성했으며, 원본의 GIF 다운로드 버그를 비롯한 여러 문제를 수정했습니다.
 
