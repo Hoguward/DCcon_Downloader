@@ -7,6 +7,23 @@
 
 ---
 
+## 빠른 시작
+
+### exe로 바로 실행 (Python 설치 불필요)
+
+1. [Releases](../../releases) 페이지에서 최신 `DCcon-Downloader.exe` 다운로드
+2. 더블클릭 실행 — 설치나 압축 해제 과정 없음
+3. Windows Defender/백신에서 경고가 뜰 수 있는데, PyInstaller로 빌드된 파이썬 실행 파일에서 흔한 오탐(false positive)입니다. 각 릴리스 노트에 바이러스토탈 검사 결과를 함께 남깁니다.
+
+### Python 직접 실행 (개발/커스터마이징 시)
+
+1. [Python 3.10+](https://www.python.org/downloads/) 설치 (설치 시 **"Add Python to PATH" 체크 필수**)
+2. `dccon_gui.py` 더블클릭
+3. 최초 실행 시 필요한 패키지(`requests`, `beautifulsoup4`, `pillow`, `ttkbootstrap`)가 없으면 안내가 뜹니다. `pip install requests beautifulsoup4 pillow ttkbootstrap` 후 다시 실행하세요.
+
+
+---
+
 ## 원본 대비 개선점
 
 | 항목 | 원본 (base4base) | 이 버전 |
@@ -23,21 +40,6 @@
 
 원본의 핵심 버그는 `Content-Disposition` 헤더에서 파일명을 추출할 때 양쪽 따옴표(`"`를 제거하지 않은 것입니다. 서버가 `filename="icon_31.gif"` 형식으로 응답할 때 따옴표까지 파일명에 포함되어 Windows에서 ENOENT가 발생했습니다 (Windows는 `"`를 파일명에 허용하지 않음).
 
----
-
-## 빠른 시작
-
-### exe로 바로 실행 (Python 설치 불필요)
-
-1. [Releases](../../releases) 페이지에서 최신 `DCcon-Downloader.exe` 다운로드
-2. 더블클릭 실행 — 설치나 압축 해제 과정 없음
-3. Windows Defender/백신에서 경고가 뜰 수 있는데, PyInstaller로 빌드된 파이썬 실행 파일에서 흔한 오탐(false positive)입니다. 각 릴리스 노트에 바이러스토탈 검사 결과를 함께 남깁니다.
-
-### Python 직접 실행 (개발/커스터마이징 시)
-
-1. [Python 3.10+](https://www.python.org/downloads/) 설치 (설치 시 **"Add Python to PATH" 체크 필수**)
-2. `dccon_gui.py` 더블클릭
-3. 최초 실행 시 필요한 패키지(`requests`, `beautifulsoup4`, `pillow`, `ttkbootstrap`)가 없으면 안내가 뜹니다. `pip install requests beautifulsoup4 pillow ttkbootstrap` 후 다시 실행하세요.
 
 ---
 
