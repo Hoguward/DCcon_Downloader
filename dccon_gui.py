@@ -82,6 +82,11 @@ HEADERS = {
 }
 
 INVALID_FN_CHARS = re.compile(r'[\\/:*?"<>|]')
+# Segoe UI는 한글 글리프가 없어 한글 텍스트를 그릴 때 Windows가 다른
+# 폰트로 자동 대체(fallback)하는데, 이 과정에서 bold 굵기가 문자 종류
+# (한글 vs 영문/숫자)별로 들쭉날쭉하게 적용되는 문제가 있었다. 한글/영문
+# 모두 안정적으로 지원하고 bold 웨이트도 확실한 맑은 고딕으로 통일한다.
+FONT_FAMILY = "맑은 고딕"
 THUMB_SIZE = (150, 150)
 THUMB_WORKERS = 16      # 썸네일/미리보기 동시 다운로드 스레드 수
 THUMB_CACHE_MAX = 800   # 메모리에 유지할 썸네일 최대 개수 (초과 시 오래된 것부터 제거)
@@ -458,7 +463,7 @@ class DcconApp(tk.Tk):
         if ThemeDefinition is not None:
             try:
                 self.style.register_theme(
-                    ThemeDefinition("dcinside", "light", DCINSIDE_THEME_COLORS)
+                    ThemeDefinition("dcinside", DCINSIDE_THEME_COLORS, "light")
                 )
                 self.style.theme_use("dcinside")
                 applied = True
@@ -476,9 +481,24 @@ class DcconApp(tk.Tk):
         header = tb.Frame(self, bootstyle="primary")
         header.pack(side="top", fill="x")
         tb.Label(header, text="DCcon Downloader", bootstyle="inverse-primary",
-                 font=("Segoe UI", 13, "bold")).pack(side="left", padx=(14, 8), pady=9)
+                 font=(FONT_FAMILY, 13, "bold")).pack(side="left", padx=(14, 8), pady=9)
         tb.Label(header, text="디시콘 일괄 다운로더", bootstyle="inverse-primary",
-                 font=("Segoe UI", 9)).pack(side="left", pady=9)
+                 font=(FONT_FAMILY, 9)).pack(side="left", pady=9)
+
+        # 저장 폴더 UI를 브랜드 바 오른쪽에 배치. 검색 툴바에 함께 두면
+        # 창이 좁아졌을 때 [변경]/[열기] 버튼이 창 밖으로 밀려 안 보이는
+        # 문제가 있었는데, 브랜드 바는 폭이 넉넉하고 이 앱에서 사용
+        # 빈도가 높은 기능이라 상시 노출되는 자리로 옮겼다.
+        tb.Button(header, text="열기", bootstyle="secondary-outline",
+                  command=self.open_dir).pack(side="right", padx=(0, 14), pady=9)
+        # light-outline 은 파란 브랜드 바 배경과 대비가 거의 없어 텍스트가
+        # 안 보이는 문제가 있었다. warning(노란색 계열)로 확실한 대비를 준다.
+        tb.Button(header, text="📁 변경", bootstyle="warning",
+                  command=self.choose_dir).pack(side="right", padx=(0, 6), pady=9)
+        self.dir_entry = ttk.Entry(header, textvariable=self.download_dir, state="readonly", width=32)
+        self.dir_entry.pack(side="right", padx=(0, 6), pady=9)
+        tb.Label(header, text="저장 폴더:", bootstyle="inverse-primary",
+                 font=(FONT_FAMILY, 9)).pack(side="right", padx=(20, 4), pady=9)
 
         # 상단 툴바
         top = ttk.Frame(self, padding=(10, 8))
@@ -497,6 +517,19 @@ class DcconApp(tk.Tk):
         tb.Button(top, text="⟳ 새로고침", bootstyle="secondary-link",
                   command=self.reload_current).pack(side="left", padx=(0, 12))
 
+        # 페이지네이션을 검색 줄 오른쪽 끝에 배치 — 이전에는 검색 줄 아래에
+        # 독립된 줄(nav)로 있었으나, 저장 폴더 UI가 브랜드 바로 옮겨가며
+        # 줄 수를 줄이기 위해 같은 줄로 합쳤다. side="right" 는 pack 순서의
+        # 역순으로 채워지므로, 가장 오른쪽에 보일 title_lbl 을 먼저 pack 한다.
+        self.title_lbl = ttk.Label(top, text="", foreground="#666")
+        self.title_lbl.pack(side="right", padx=(20, 0))
+        self.next_btn = tb.Button(top, text="다음 ▶", bootstyle="secondary-outline", command=self.next_page)
+        self.next_btn.pack(side="right")
+        self.page_lbl = ttk.Label(top, text="1 / 1")
+        self.page_lbl.pack(side="right", padx=8)
+        self.prev_btn = tb.Button(top, text="◀ 이전", bootstyle="secondary-outline", command=self.prev_page)
+        self.prev_btn.pack(side="right")
+
         ttk.Label(top, text="검색:").pack(side="left")
         self.search_var = tk.StringVar()
         ent = ttk.Entry(top, textvariable=self.search_var, width=22)
@@ -506,18 +539,8 @@ class DcconApp(tk.Tk):
         self.search_entry = ent
         tb.Button(top, text="찾기", bootstyle="primary", command=self.do_search).pack(side="left")
 
-        ttk.Label(top, text="  저장 폴더:").pack(side="left", padx=(20, 4))
-        # 경로는 직접 편집 불가 — 반드시 [...] 버튼으로 폴더 선택 대화상자 사용
-        self.dir_entry = ttk.Entry(
-            top, textvariable=self.download_dir, width=36, state="readonly"
-        )
-        self.dir_entry.pack(side="left")
-        # 폴더 선택 버튼 (Windows 탐색기 폴더 아이콘 느낌으로 강조)
-        tb.Button(top, text="📁 변경", bootstyle="info-outline", command=self.choose_dir).pack(side="left", padx=(4, 4))
-        tb.Button(top, text="열기", bootstyle="secondary-outline", command=self.open_dir).pack(side="left")
-
         # 현재 경로를 툴팁처럼 보여주기 위해 경로가 너무 길 때 끝부분만 보이도록
-        # entry의 view를 끝으로 이동
+        # entry의 view를 끝으로 이동 (저장 폴더 입력창은 브랜드 바에 있음)
         def _scroll_end(*_):
             try:
                 self.dir_entry.xview_moveto(1.0)
@@ -525,18 +548,6 @@ class DcconApp(tk.Tk):
                 pass
         self.download_dir.trace_add("write", _scroll_end)
         self.after(50, _scroll_end)
-
-        # 페이지네이션
-        nav = ttk.Frame(self, padding=(10, 0))
-        nav.pack(side="top", fill="x")
-        self.prev_btn = tb.Button(nav, text="◀ 이전", bootstyle="secondary-outline", command=self.prev_page)
-        self.prev_btn.pack(side="left")
-        self.page_lbl = ttk.Label(nav, text="1 / 1")
-        self.page_lbl.pack(side="left", padx=8)
-        self.next_btn = tb.Button(nav, text="다음 ▶", bootstyle="secondary-outline", command=self.next_page)
-        self.next_btn.pack(side="left")
-        self.title_lbl = ttk.Label(nav, text="", foreground="#666")
-        self.title_lbl.pack(side="left", padx=20)
 
         # 메인 카드 영역 (스크롤 가능한 캔버스)
         body = ttk.Frame(self)
@@ -809,15 +820,15 @@ class DcconApp(tk.Tk):
         thumb_box.pack()
         thumb_box.pack_propagate(False)
         thumb = tk.Label(thumb_box, text="…", bg=COL_THUMB_BG, fg="#c4c4c4",
-                         font=("Segoe UI", 22))
+                         font=(FONT_FAMILY, 22))
         thumb.pack(expand=True)
 
         title = tk.Label(inner, text=item["title"][:24], bg=COL_BG, fg="#222",
                          wraplength=THUMB_SIZE[0], justify="center",
-                         font=("Segoe UI", 9, "bold"))
+                         font=(FONT_FAMILY, 9, "bold"))
         title.pack(pady=(8, 0))
         seller = tk.Label(inner, text=item["nick_name"][:24], bg=COL_BG, fg="#999",
-                          font=("Segoe UI", 8))
+                          font=(FONT_FAMILY, 8))
         seller.pack()
 
         widgets = (card, inner, thumb_box, thumb, title, seller)
@@ -937,7 +948,7 @@ class DetailDialog(tk.Toplevel):
         titlebar = tb.Frame(self, bootstyle="primary")
         titlebar.pack(fill="x")
         tb.Label(titlebar, text=self.detail["title"], bootstyle="inverse-primary",
-                 font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=12, pady=8)
+                 font=(FONT_FAMILY, 14, "bold")).pack(anchor="w", padx=12, pady=8)
 
         head = ttk.Frame(self, padding=(12, 8)); head.pack(fill="x")
         ttk.Label(head, text=self.detail["seller"], foreground="#555").pack(anchor="w")
