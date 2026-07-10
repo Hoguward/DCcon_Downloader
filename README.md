@@ -17,7 +17,8 @@
 
 1. [Releases](../../releases) 페이지에서 최신 `DCcon-Downloader.exe` 다운로드
 2. 더블클릭 실행 — 설치나 압축 해제 과정 없음
-3. Windows Defender/백신에서 경고가 뜰 수 있는데, PyInstaller로 빌드된 파이썬 실행 파일에서 흔한 오탐(false positive)입니다. 각 릴리스 노트에 바이러스토탈 검사 결과를 함께 남깁니다.
+3. Windows Defender/백신에서 경고가 뜰 수 있는데, PyInstaller로 빌드된 파이썬 실행 파일에서 흔한 오탐(false positive)입니다.
+4. [바이러스토탈 검사 결과](https://www.virustotal.com/gui/file/56f5da31b15c091034baa93f17d478b5d5f0d6bd7a84b785b8fc675e6fb4febf/detection)를 함께 남깁니다.(68건 중 3개 검출(오탐))
 
 ### Python 직접 실행 (개발/커스터마이징 시)
 
