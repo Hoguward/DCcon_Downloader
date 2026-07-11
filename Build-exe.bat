@@ -16,11 +16,11 @@ if errorlevel 1 (
 )
 
 echo [1/3] Checking dependencies...
-python -c "import requests, bs4, PIL" 2>nul
+python -c "import requests, bs4, PIL, ttkbootstrap, win32clipboard" 2>nul
 if errorlevel 1 (
     echo Installing runtime dependencies...
     python -m pip install --quiet --upgrade pip
-    python -m pip install --quiet requests beautifulsoup4 pillow
+    python -m pip install --quiet requests beautifulsoup4 pillow ttkbootstrap pywin32
 )
 
 python -c "import PyInstaller" 2>nul

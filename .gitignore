@@ -25,6 +25,9 @@ Thumb.db
 dccon_downloaded/
 ../dccon_downloaded/
 
+# 사용자별 실행 설정 (저장 폴더, 창 크기, 마지막 화면) — 레포에 포함하지 않음
+config.json
+
 # 환경변수/시크릿
 .env
 .env.local

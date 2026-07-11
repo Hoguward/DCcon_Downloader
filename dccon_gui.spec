@@ -13,6 +13,9 @@ a = Analysis(
         # tkinter 관련 일부 환경에서 자동 인식 안 되는 모듈 보강
         'PIL._tkinter_finder',
         'ttkbootstrap',
+        # 클립보드 이미지/파일 복사 기능(win32clipboard)에 필요
+        'win32clipboard',
+        'win32con',
     ],
     hookspath=[],
     hooksconfig={},

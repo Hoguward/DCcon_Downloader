@@ -16,6 +16,9 @@ import os
 import re
 import sys
 import json
+import struct
+import shutil
+import tempfile
 import threading
 import subprocess
 from urllib.parse import quote, unquote
@@ -39,6 +42,11 @@ try:
     import ttkbootstrap  # noqa: F401  (테마용)
 except ImportError:
     _missing.append("ttkbootstrap")
+try:
+    import win32clipboard  # noqa: F401  (클립보드 이미지/파일 복사용)
+    import win32con  # noqa: F401
+except ImportError:
+    _missing.append("pywin32")
 
 if _missing:
     msg = (
@@ -209,6 +217,38 @@ def _default_download_dir() -> str:
 
 DEFAULT_DOWNLOAD_DIR = _default_download_dir()
 
+CONFIG_PATH = os.path.join(_app_dir(), "config.json")
+CLIPBOARD_TMP_DIR = os.path.join(tempfile.gettempdir(), "dccon_clipboard_tmp")
+
+
+def load_config() -> dict:
+    """config.json을 읽어 dict로 반환. 없거나 손상됐으면 빈 dict.
+
+    키 단위로 best-effort 적용하는 쪽(호출부)에서 누락된 키는 알아서
+    기본값으로 폴백하므로, 여기서는 파일 자체의 존재/파싱 실패만 처리한다.
+    """
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_config(partial: dict) -> None:
+    """기존 config.json에 partial을 병합해 저장. 실패해도 조용히 무시.
+
+    실행 중 여러 지점(폴더 변경, 창 크기 변경, 화면 전환)에서 호출되므로
+    쓰기 실패(권한 문제 등)가 앱 동작을 막으면 안 된다.
+    """
+    try:
+        data = load_config()
+        data.update(partial)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 
 # ---------- 유틸 ----------
 def sanitize_filename(name: str) -> str:
@@ -237,6 +277,119 @@ def filename_from_response(resp, fallback: str) -> str:
     else:
         ext = ".bin"
     return f"{fallback}{ext}"
+
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+_NATSORT_RE = re.compile(r"(\d+)")
+
+
+def _natural_sort_key(filename: str):
+    """'icon_10'이 'icon_2'보다 앞에 오는 사전식 정렬 오류를 막는 정렬 키."""
+    return [int(p) if p.isdigit() else p.lower() for p in _NATSORT_RE.split(filename)]
+
+
+def _read_image_bytes(path_or_url: str, api) -> bytes:
+    """온라인 URL과 로컬 파일 경로를 모두 받아 이미지 bytes를 반환.
+
+    카드 썸네일/상세창 미리보기가 온라인(디시인사이드 URL)과 로컬(내
+    보관함, 저장된 파일 경로) 두 소스를 동일한 방식으로 다뤄야 해서
+    이 판별을 한 곳에 모았다. DcconAPI 자체는 순수 HTTP 클라이언트로
+    유지하고, 로컬 분기는 이 모듈 레벨 함수에서 처리한다.
+    """
+    if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+        return api.fetch_thumb(path_or_url)
+    with open(path_or_url, "rb") as f:
+        return f.read()
+
+
+def _scan_local_packages(download_dir: str) -> list:
+    """저장 폴더 하위의 <제목>/icon_*.* 구조를 스캔해 카드용 item 리스트로 변환.
+
+    각 하위 폴더 = 다운로드된 디시콘 패키지 하나. 폴더 안 이미지 파일
+    중 자연 정렬 기준 첫 번째를 대표 썸네일로 쓴다. 제목(폴더명) 가나다순
+    정렬로 반환한다.
+    """
+    items = []
+    if not os.path.isdir(download_dir):
+        return items
+    for entry in os.scandir(download_dir):
+        if not entry.is_dir():
+            continue
+        images = [
+            f for f in os.listdir(entry.path)
+            if f.lower().endswith(IMAGE_EXTS)
+        ]
+        if not images:
+            continue
+        images.sort(key=_natural_sort_key)
+        thumb_path = os.path.join(entry.path, images[0])
+        items.append({
+            "title": entry.name,
+            "nick_name": "",
+            "img": thumb_path,
+            "package_idx": "",
+            "is_local": True,
+            "folder_path": entry.path,
+        })
+    items.sort(key=lambda it: _natural_sort_key(it["title"]))
+    return items
+
+
+def _is_animated_bytes(image_bytes: bytes) -> bool:
+    try:
+        im = Image.open(io.BytesIO(image_bytes))
+        return getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1
+    except Exception:
+        return False
+
+
+def _copy_bytes_as_dib(image_bytes: bytes) -> None:
+    """정지 이미지 bytes를 Windows 클립보드에 CF_DIB(표준 이미지)로 복사.
+
+    BMP로 저장한 뒤 14바이트 파일헤더(BITMAPFILEHEADER)를 제거하면
+    남는 것이 곧 DIB(BITMAPINFOHEADER + 픽셀 데이터)다. CF_DIB는 알파
+    채널을 지원하지 않으므로 RGB로 변환한다.
+    """
+    im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    buf = io.BytesIO()
+    im.save(buf, "BMP")
+    dib = buf.getvalue()[14:]
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib)
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def _copy_file_as_hdrop(file_path: str) -> None:
+    """파일 자체를 Windows 클립보드에 CF_HDROP(파일 복사)으로 올린다.
+
+    표준 이미지 포맷(CF_DIB)은 정지 프레임 한 장만 담을 수 있어 GIF
+    애니메이션이 소실된다. CF_HDROP은 "파일 탐색기에서 파일을 복사한
+    것"과 동일하게 동작해 대상 앱이 원본 파일을 그대로 읽으므로
+    애니메이션이 보존된다 (실측 검증됨). DROPFILES 구조체를 수동으로
+    조립해야 pywin32의 SetClipboardData(CF_HDROP, ...)에 넘길 수 있다.
+    """
+    file_list = (file_path + "\0").encode("utf-16-le") + "\0".encode("utf-16-le")
+    header = struct.pack("<LLLLL", 20, 0, 0, 0, 1)  # DROPFILES: pFiles, pt, fNC, fWide
+    data = header + file_list
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.CF_HDROP, data)
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def _ensure_clipboard_tmp_dir() -> str:
+    """CF_HDROP용 임시 폴더를 준비. 이전 세션 잔여물은 베스트 에포트로 정리."""
+    try:
+        shutil.rmtree(CLIPBOARD_TMP_DIR, ignore_errors=True)
+    except Exception:
+        pass
+    os.makedirs(CLIPBOARD_TMP_DIR, exist_ok=True)
+    return CLIPBOARD_TMP_DIR
 
 
 # ---------- API 래퍼 ----------
@@ -402,6 +555,9 @@ class DcconApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("DCcon Downloader (Python GUI)")
+
+        self._config = load_config()
+
         self.geometry("1100x720")
         self.minsize(900, 600)
         self.maxsize(self.winfo_screenwidth(), self.winfo_screenheight())
@@ -412,17 +568,65 @@ class DcconApp(tk.Tk):
         self._show_pager = True
         self.thumb_refs = {}      # 카드 썸네일 ImageTk 참조 보관
         self.preview_refs = []    # 상세창 이미지 참조 보관
-        self.download_dir = tk.StringVar(value=DEFAULT_DOWNLOAD_DIR)
-        self.mode = tk.StringVar(value="new")        # new | search | top
+        saved_dir = self._config.get("download_dir")
+        initial_dir = saved_dir if saved_dir and os.path.isdir(saved_dir) else DEFAULT_DOWNLOAD_DIR
+        self.download_dir = tk.StringVar(value=initial_dir)
+        self.mode = tk.StringVar(value="new")        # new | search | top | local
         self.period = tk.StringVar(value="day")      # day | week (top용)
         self.page = 1
         self.last_page = 1
         self.last_search = ""
         self._did_initial_fit = False   # 첫 로딩 후 창 높이를 콘텐츠에 맞추는 1회성 플래그
+        self._geometry_save_job = None  # <Configure> 디바운스용 after() 핸들
+
+        # 저장된 창 크기/위치가 있으면 그대로 적용하고, 콘텐츠 맞춤 자동 조정은
+        # 건너뛴다 (사용자가 이미 조정한 크기를 존중).
+        saved_geometry = self._config.get("window_geometry")
+        if saved_geometry:
+            try:
+                self.geometry(saved_geometry)
+                self._did_initial_fit = True
+            except Exception:
+                pass
+
+        _ensure_clipboard_tmp_dir()
 
         self._build_ui()
         self._bind_shortcuts()
-        self.after(100, lambda: self.load_list("new", 1))
+        self.bind("<Configure>", self._on_window_configure)
+        self.after(100, self._restore_last_mode)
+
+    def _restore_last_mode(self):
+        """config.json에 저장된 마지막 화면(모드)으로 복원. 없으면 NEW 목록."""
+        saved = self._config.get("last_mode") or {}
+        mode = saved.get("mode")
+        page = saved.get("page", 1) if isinstance(saved.get("page"), int) else 1
+        if mode == "top" and saved.get("period") in ("day", "week"):
+            self.load_top(saved["period"])
+        elif mode == "search" and saved.get("search_keyword"):
+            self.search_var.set(saved["search_keyword"])
+            self.do_search(page=page)
+        elif mode == "local":
+            self.load_local(page)
+        else:
+            self.load_list("new", page)
+
+    def _on_window_configure(self, event):
+        # top-level 창 자체의 이동/리사이즈만 관심 대상 — 자식 위젯의
+        # <Configure> 이벤트가 훨씬 자주 버블링되므로 걸러낸다.
+        if event.widget is not self:
+            return
+        if self._geometry_save_job is not None:
+            self.after_cancel(self._geometry_save_job)
+        self._geometry_save_job = self.after(300, self._save_window_geometry)
+
+    def _save_window_geometry(self):
+        self._geometry_save_job = None
+        save_config({"window_geometry": self.geometry()})
+
+    def _save_last_mode(self, **fields):
+        """현재 화면 상태를 config.json에 저장. 각 로딩 함수에서 호출."""
+        save_config({"last_mode": fields})
 
     def _bind_shortcuts(self):
         def focus_search(_e=None):
@@ -439,6 +643,8 @@ class DcconApp(tk.Tk):
             self.load_top(self.period.get())
         elif mode == "search" and self.last_search:
             self._goto_page(self.page)
+        elif mode == "local":
+            self.load_local(self.page)
         else:
             self.load_list("new", self.page)
 
@@ -450,6 +656,7 @@ class DcconApp(tk.Tk):
             self.nav_day: mode == "top" and period == "day",
             self.nav_week: mode == "top" and period == "week",
             self.nav_new: mode == "new",
+            self.nav_local: mode == "local",
         }
         for btn, on in states.items():
             btn.configure(bootstyle="primary" if on else "secondary-outline")
@@ -514,6 +721,9 @@ class DcconApp(tk.Tk):
         self.nav_new = tb.Button(top, text="NEW", bootstyle="secondary-outline",
                                  command=lambda: self.load_list("new", 1))
         self.nav_new.pack(side="left", padx=(0, 4))
+        self.nav_local = tb.Button(top, text="내 보관함", bootstyle="secondary-outline",
+                                   command=lambda: self.load_local(1))
+        self.nav_local.pack(side="left", padx=(0, 4))
         tb.Button(top, text="⟳ 새로고침", bootstyle="secondary-link",
                   command=self.reload_current).pack(side="left", padx=(0, 12))
 
@@ -631,6 +841,7 @@ class DcconApp(tk.Tk):
             # tkinter는 슬래시(/)로 반환 — Windows 표시용으로 백슬래시로 변환
             d = os.path.normpath(d)
             self.download_dir.set(d)
+            save_config({"download_dir": d})
 
     def open_dir(self):
         d = self.download_dir.get()
@@ -664,6 +875,7 @@ class DcconApp(tk.Tk):
         self._sync_nav_active()
         self.title_lbl.config(text=f"{'일간' if period=='day' else '주간'} 인기 디시콘")
         self.set_status("불러오는 중...")
+        self._save_last_mode(mode="top", period=period)
         # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
         threading.Thread(target=self._fetch_top, args=(period,), daemon=True).start()
@@ -689,6 +901,7 @@ class DcconApp(tk.Tk):
         self._sync_nav_active()
         self.title_lbl.config(text="NEW 디시콘")
         self.set_status(f"{kind.upper()} {page}페이지 불러오는 중...")
+        self._save_last_mode(mode="new", page=page)
         # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
         threading.Thread(target=self._fetch_list, args=(kind, page), daemon=True).start()
@@ -701,17 +914,18 @@ class DcconApp(tk.Tk):
         except Exception as e:
             self.after(0, self.set_status, f"실패: {e}")
 
-    def do_search(self):
+    def do_search(self, page: int = 1):
         kw = self.search_var.get().strip()
         if not kw:
             return
-        self.mode.set("search"); self.last_search = kw; self.page = 1
+        self.mode.set("search"); self.last_search = kw; self.page = page
         self._sync_nav_active()
         self.title_lbl.config(text=f'검색: "{kw}"')
         self.set_status("검색 중...")
+        self._save_last_mode(mode="search", search_keyword=kw, page=page)
         # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
-        threading.Thread(target=self._fetch_search, args=(kw, 1), daemon=True).start()
+        threading.Thread(target=self._fetch_search, args=(kw, page), daemon=True).start()
 
     def _fetch_search(self, kw, page):
         try:
@@ -740,8 +954,35 @@ class DcconApp(tk.Tk):
         elif mode == "search":
             self.page = p
             self.set_status(f'"{self.last_search}" {p}페이지 검색 중...')
+            self._save_last_mode(mode="search", search_keyword=self.last_search, page=p)
             self.clear_grid()
             threading.Thread(target=self._fetch_search, args=(self.last_search, p), daemon=True).start()
+        elif mode == "local":
+            self.load_local(p)
+
+    # ---------- 내 보관함 (로컬 목록) ----------
+    def load_local(self, page: int = 1):
+        """서버 호출 없이 저장 폴더를 스캔해 로컬에 저장된 디시콘 목록을 표시."""
+        self.mode.set("local"); self.page = page
+        self._sync_nav_active()
+        self.title_lbl.config(text="내 보관함")
+        self.set_status("저장 폴더 스캔 중...")
+        self._save_last_mode(mode="local", page=page)
+        self.clear_grid()
+        threading.Thread(target=self._fetch_local, args=(page,), daemon=True).start()
+
+    def _fetch_local(self, page):
+        try:
+            all_items = _scan_local_packages(self.download_dir.get())
+            per_page = 15
+            self.last_page = max(1, (len(all_items) + per_page - 1) // per_page)
+            page = max(1, min(page, self.last_page))
+            self.page = page
+            start = (page - 1) * per_page
+            page_items = all_items[start:start + per_page]
+            self.after(0, self._show_items, page_items, True)
+        except Exception as e:
+            self.after(0, self.set_status, f"실패: {e}")
 
     # ---------- 카드 렌더링 ----------
     def _show_items(self, items, show_pager, keep_scroll=False):
@@ -869,7 +1110,7 @@ class DcconApp(tk.Tk):
 
         def load_thumb():
             try:
-                data = self.api.fetch_thumb(item["img"])
+                data = _read_image_bytes(item["img"], self.api)
                 im = Image.open(io.BytesIO(data))
                 im.thumbnail(THUMB_SIZE)
                 tkim = ImageTk.PhotoImage(im)
@@ -909,6 +1150,7 @@ class DetailDialog(tk.Toplevel):
         self.preview_canvas = None
         self.preview_inner = None
         self.preview_cache = {}   # url -> ImageTk.PhotoImage, 리사이즈 재배치 시 재다운로드 방지
+        self.raw_cache = {}       # url/경로 -> 원본 bytes, 클립보드 복사용(원본 화질 필요)
 
         ttk.Label(self, text="불러오는 중...", padding=20).pack()
         threading.Thread(target=self._load, daemon=True).start()
@@ -932,9 +1174,35 @@ class DetailDialog(tk.Toplevel):
             self.geometry(f"{w}x{h}")
 
     def _load(self):
+        if self.item.get("is_local"):
+            self._load_local()
+            return
         try:
             d = self.master_app.api.get_detail(self.item["package_idx"])
             self.detail = d
+            self.after(0, self._render)
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("실패", str(e), parent=self))
+            self.after(0, self.destroy)
+
+    def _load_local(self):
+        """내 보관함 항목: 서버 재조회 없이 폴더 안 파일을 그대로 나열."""
+        try:
+            folder = self.item["folder_path"]
+            files = [
+                f for f in os.listdir(folder)
+                if f.lower().endswith(IMAGE_EXTS)
+            ]
+            files.sort(key=_natural_sort_key)
+            urls = [os.path.join(folder, f) for f in files]
+            self.detail = {
+                "title": self.item["title"],
+                "seller": "",
+                "tags": "",
+                "description": "",
+                "urls": urls,
+                "is_local": True,
+            }
             self.after(0, self._render)
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("실패", str(e), parent=self))
@@ -959,12 +1227,15 @@ class DetailDialog(tk.Toplevel):
 
         ttk.Separator(self).pack(fill="x", padx=10)
 
-        # 진행 상태 + 버튼
-        bar = ttk.Frame(self, padding=(10, 4)); bar.pack(fill="x")
-        self.progress = tb.Progressbar(bar, mode="determinate", bootstyle="primary")
-        self.progress.pack(side="left", fill="x", expand=True)
-        tb.Button(bar, text=f"전체 {len(self.detail['urls'])}개 다운로드", bootstyle="primary",
-                  command=self.start_download).pack(side="left", padx=(8, 0))
+        # 진행 상태 + 버튼 — 내 보관함(로컬) 항목은 이미 저장된 파일이므로
+        # "다운로드" 개념 자체가 없어 이 영역을 통째로 생략한다.
+        self.progress = None
+        if not self.detail.get("is_local"):
+            bar = ttk.Frame(self, padding=(10, 4)); bar.pack(fill="x")
+            self.progress = tb.Progressbar(bar, mode="determinate", bootstyle="primary")
+            self.progress.pack(side="left", fill="x", expand=True)
+            tb.Button(bar, text=f"전체 {len(self.detail['urls'])}개 다운로드", bootstyle="primary",
+                      command=self.start_download).pack(side="left", padx=(8, 0))
 
         # 미리보기 그리드
         prev_frame = ttk.Frame(self, padding=10); prev_frame.pack(fill="both", expand=True)
@@ -1034,8 +1305,13 @@ class DetailDialog(tk.Toplevel):
             menu = tk.Menu(self, tearoff=0)
             menu.add_command(label=name, state="disabled")
             menu.add_separator()
-            menu.add_command(label="다운로드",
-                             command=lambda: self._download_single(index, url, name))
+            # 내 보관함(로컬) 항목은 이미 저장된 파일이므로 "다운로드" 메뉴가
+            # 의미 없어 생략한다. "복사"는 온라인/로컬 모두 항상 제공.
+            if not self.detail.get("is_local"):
+                menu.add_command(label="다운로드",
+                                 command=lambda: self._download_single(index, url, name))
+            menu.add_command(label="복사",
+                             command=lambda: self._copy_preview_to_clipboard(index, url))
             try:
                 menu.tk_popup(e.x_root, e.y_root)
             finally:
@@ -1075,7 +1351,11 @@ class DetailDialog(tk.Toplevel):
 
         def task():
             try:
-                data = self.master_app.api.fetch_thumb(url)
+                data = _read_image_bytes(url, self.master_app.api)
+                # 리사이즈된 미리보기(preview_cache)와 별개로 원본 bytes를
+                # 캐시해둔다 — 클립보드 복사 시 100x100로 축소된 화질이
+                # 아니라 원본 화질/원본 GIF 프레임 전체가 필요하기 때문.
+                self.raw_cache[url] = data
                 entry = self._build_preview_entry(data)
                 self.preview_cache[url] = entry
                 self.after(0, lambda: self._apply_preview(label, entry))
@@ -1185,6 +1465,49 @@ class DetailDialog(tk.Toplevel):
                 subprocess.Popen(["xdg-open", path])
         except Exception as e:
             messagebox.showerror("열기 실패", str(e), parent=self)
+
+    def _copy_preview_to_clipboard(self, index, url_or_path):
+        """이미지를 다운로드하지 않고 클립보드에 바로 복사.
+
+        정지 이미지는 표준 이미지 포맷(CF_DIB)으로 즉시 복사한다.
+        GIF는 CF_DIB로 복사하면 첫 프레임만 남고 애니메이션이 소실되므로
+        (실측 확인), 파일 자체를 클립보드에 올리는 CF_HDROP을 쓴다 —
+        로컬 항목은 이미 있는 파일 경로를 그대로, 온라인 항목은 원본
+        bytes를 임시 폴더에 flush한 뒤 그 경로를 사용한다. CF_HDROP은
+        일부 메신저(카카오톡 PC 등)가 지원하지 않을 수 있다(대상 앱의
+        한계이며 우리 쪽에서 해결할 수 없음을 확인함).
+        """
+        self.master_app.set_status("복사 중...")
+        is_local = self.detail.get("is_local", False)
+
+        def task():
+            try:
+                if is_local:
+                    # 로컬 파일은 이미 디스크에 있으므로 그대로 사용
+                    with open(url_or_path, "rb") as f:
+                        data = f.read()
+                    if _is_animated_bytes(data):
+                        _copy_file_as_hdrop(os.path.abspath(url_or_path))
+                    else:
+                        _copy_bytes_as_dib(data)
+                else:
+                    data = self.raw_cache.get(url_or_path)
+                    if data is None:
+                        data = _read_image_bytes(url_or_path, self.master_app.api)
+                        self.raw_cache[url_or_path] = data
+                    if _is_animated_bytes(data):
+                        tmp_name = f"clip_{index}_{sanitize_filename(self.detail['title'])}.gif"
+                        tmp_path = os.path.join(CLIPBOARD_TMP_DIR, tmp_name)
+                        with open(tmp_path, "wb") as f:
+                            f.write(data)
+                        _copy_file_as_hdrop(os.path.abspath(tmp_path))
+                    else:
+                        _copy_bytes_as_dib(data)
+                self.master_app.after(0, self.master_app.set_status, "클립보드에 복사됨")
+            except Exception as e:
+                self.master_app.after(0, self.master_app.set_status, f"복사 실패: {e}")
+
+        threading.Thread(target=task, daemon=True).start()
 
 
 # ---------- 진입점 ----------
