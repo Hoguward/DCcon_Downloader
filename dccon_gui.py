@@ -908,7 +908,6 @@ class DcconApp(tk.Tk):
     def load_top(self, period, force: bool = False):
         self.mode.set("top"); self.period.set(period); self.page = 1; self.last_page = 1
         self._sync_nav_active()
-        self.title_lbl.config(text=f"{'일간' if period=='day' else '주간'} 인기 디시콘")
         self._save_last_mode(mode="top", period=period)
 
         cache_key = ("top", period)
@@ -947,7 +946,6 @@ class DcconApp(tk.Tk):
     def load_list(self, kind, page, force: bool = False):
         self.mode.set(kind); self.page = page
         self._sync_nav_active()
-        self.title_lbl.config(text="NEW 디시콘")
         self._save_last_mode(mode="new", page=page)
 
         cache_key = ("new", kind, page)
@@ -981,7 +979,6 @@ class DcconApp(tk.Tk):
             return
         self.mode.set("search"); self.last_search = kw; self.page = page
         self._sync_nav_active()
-        self.title_lbl.config(text=f'검색: "{kw}"')
         self.set_status("검색 중...")
         self._save_last_mode(mode="search", search_keyword=kw, page=page)
         # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
@@ -1026,7 +1023,6 @@ class DcconApp(tk.Tk):
         """서버 호출 없이 저장 폴더를 스캔해 로컬에 저장된 디시콘 목록을 표시."""
         self.mode.set("local"); self.page = page
         self._sync_nav_active()
-        self.title_lbl.config(text="내 보관함")
         self.set_status("저장 폴더 스캔 중...")
         self._save_last_mode(mode="local", page=page)
         self.clear_grid()
