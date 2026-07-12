@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import json
+import time
 import struct
 import shutil
 import tempfile
@@ -98,6 +99,7 @@ FONT_FAMILY = "맑은 고딕"
 THUMB_SIZE = (150, 150)
 THUMB_WORKERS = 16      # 썸네일/미리보기 동시 다운로드 스레드 수
 THUMB_CACHE_MAX = 800   # 메모리에 유지할 썸네일 최대 개수 (초과 시 오래된 것부터 제거)
+LIST_CACHE_TTL = 600    # 일간/주간 인기·NEW 목록 캐시 유효 시간(초) = 10분
 GRID_COLS = 5           # 카드 그리드 최소/기본 열 수
 
 # 색상 팔레트 (카드/호버 등 UI 공용) — DCinside 계열 근사값
@@ -106,6 +108,8 @@ COL_BORDER = "#dfe1e5"
 COL_ACCENT = "#1e5fdb"       # DCinside 계열 로열 블루
 COL_HOVER_BG = "#e8f0fe"     # 선택/호버 시 연한 파랑 배경
 COL_THUMB_BG = "#f4f6f8"
+COL_DOWNLOADED = "#1d9e75"      # 보관 중(다운로드됨) 카드 강조 — DCINSIDE_THEME_COLORS["success"]와 통일
+COL_DOWNLOADED_BG = "#e6f7f1"   # 보관 중 카드 배경 (COL_HOVER_BG와 밝기 톤 맞춤)
 
 # ttkbootstrap 커스텀 테마 색상 (DCinside 근사)
 DCINSIDE_THEME_COLORS = {
@@ -333,6 +337,17 @@ def _scan_local_packages(download_dir: str) -> list:
         })
     items.sort(key=lambda it: _natural_sort_key(it["title"]))
     return items
+
+
+def _local_titles(download_dir: str) -> set:
+    """저장 폴더에 이미 다운로드된 디시콘의 폴더명(제목) 집합.
+
+    _scan_local_packages 가 반환하는 title 은 폴더명 그대로이고, 폴더명은
+    다운로드 시 sanitize_filename(원본 제목)으로 만들어진다. 그래서 온라인
+    목록의 제목과 비교할 때는 항상 sanitize_filename(item["title"])을
+    거쳐야 특수문자가 포함된 제목도 올바르게 매칭된다.
+    """
+    return {it["title"] for it in _scan_local_packages(download_dir)}
 
 
 def _is_animated_bytes(image_bytes: bytes) -> bool:
@@ -568,6 +583,11 @@ class DcconApp(tk.Tk):
         self._show_pager = True
         self.thumb_refs = {}      # 카드 썸네일 ImageTk 참조 보관
         self.preview_refs = []    # 상세창 이미지 참조 보관
+        # 일간/주간 인기·NEW 목록 결과 캐시. 키: ("top", period) 또는
+        # ("new", kind, page). 값: (timestamp, last_page, items, show_pager).
+        # config.json에는 넣지 않는다 — 휘발성 데이터라 재시작 후 오래된
+        # 값이 남으면 오히려 혼란스럽다(설계 논의 결론).
+        self._list_cache = {}
         saved_dir = self._config.get("download_dir")
         initial_dir = saved_dir if saved_dir and os.path.isdir(saved_dir) else DEFAULT_DOWNLOAD_DIR
         self.download_dir = tk.StringVar(value=initial_dir)
@@ -637,16 +657,21 @@ class DcconApp(tk.Tk):
         self.bind_all("<F5>", lambda e: self.reload_current())
 
     def reload_current(self):
-        """현재 보고 있는 화면(모드/페이지)을 그대로 다시 불러온다."""
+        """현재 보고 있는 화면(모드/페이지)을 그대로 다시 불러온다.
+
+        F5/새로고침 버튼에서만 호출되므로 목록 캐시를 무시하고(force=True)
+        항상 서버에서 새로 받아온다. 탭 버튼 클릭은 이 함수를 거치지 않아
+        캐시를 그대로 활용한다.
+        """
         mode = self.mode.get()
         if mode == "top":
-            self.load_top(self.period.get())
+            self.load_top(self.period.get(), force=True)
         elif mode == "search" and self.last_search:
             self._goto_page(self.page)
         elif mode == "local":
             self.load_local(self.page)
         else:
-            self.load_list("new", self.page)
+            self.load_list("new", self.page, force=True)
 
     def _sync_nav_active(self):
         """현재 보기(mode/period)에 해당하는 세그먼트 탭만 primary 로 강조."""
@@ -870,12 +895,34 @@ class DcconApp(tk.Tk):
         self.prev_btn.config(state=state_prev)
         self.next_btn.config(state=state_next)
 
-    def load_top(self, period):
+    def _cache_get(self, key):
+        """목록 캐시 조회. TTL이 지났으면 만료된 것으로 취급해 None 반환."""
+        entry = self._list_cache.get(key)
+        if entry is None:
+            return None
+        ts, last_page, items, show_pager = entry
+        if time.time() - ts > LIST_CACHE_TTL:
+            return None
+        return last_page, items, show_pager
+
+    def load_top(self, period, force: bool = False):
         self.mode.set("top"); self.period.set(period); self.page = 1; self.last_page = 1
         self._sync_nav_active()
         self.title_lbl.config(text=f"{'일간' if period=='day' else '주간'} 인기 디시콘")
-        self.set_status("불러오는 중...")
         self._save_last_mode(mode="top", period=period)
+
+        cache_key = ("top", period)
+        if not force:
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                last_page, items, show_pager = cached
+                self.last_page = last_page
+                self.set_status("불러오는 중... (캐시)")
+                self.clear_grid()
+                self._show_items(items, show_pager)
+                return
+
+        self.set_status("불러오는 중...")
         # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
         threading.Thread(target=self._fetch_top, args=(period,), daemon=True).start()
@@ -892,16 +939,29 @@ class DcconApp(tk.Tk):
                     "title": it.get("title", ""),
                     "nick_name": it.get("nick_name", ""),
                 })
+            self._list_cache[("top", period)] = (time.time(), 1, normalized, False)
             self.after(0, self._show_items, normalized, False)
         except Exception as e:
             self.after(0, self.set_status, f"실패: {e}")
 
-    def load_list(self, kind, page):
+    def load_list(self, kind, page, force: bool = False):
         self.mode.set(kind); self.page = page
         self._sync_nav_active()
         self.title_lbl.config(text="NEW 디시콘")
-        self.set_status(f"{kind.upper()} {page}페이지 불러오는 중...")
         self._save_last_mode(mode="new", page=page)
+
+        cache_key = ("new", kind, page)
+        if not force:
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                last_page, items, show_pager = cached
+                self.last_page = last_page
+                self.set_status(f"{kind.upper()} {page}페이지 (캐시)")
+                self.clear_grid()
+                self._show_items(items, show_pager)
+                return
+
+        self.set_status(f"{kind.upper()} {page}페이지 불러오는 중...")
         # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
         threading.Thread(target=self._fetch_list, args=(kind, page), daemon=True).start()
@@ -910,6 +970,7 @@ class DcconApp(tk.Tk):
         try:
             last, items = self.api.get_list(kind, page)
             self.last_page = max(last, page)
+            self._list_cache[("new", kind, page)] = (time.time(), self.last_page, items, True)
             self.after(0, self._show_items, items, True)
         except Exception as e:
             self.after(0, self.set_status, f"실패: {e}")
@@ -995,9 +1056,16 @@ class DcconApp(tk.Tk):
             self.set_status("결과 없음")
             self.canvas.yview_moveto(0)
             return
+        # 내 보관함 화면은 항목 전체가 이미 다운로드된 것이므로 하이라이트가
+        # 무의미해 계산을 건너뛴다. 그 외 화면에서는 카드마다 디스크를 다시
+        # 스캔하지 않도록 한 번만 스캔해 재사용한다.
+        local_titles = (
+            set() if self.mode.get() == "local"
+            else _local_titles(self.download_dir.get())
+        )
         for i, it in enumerate(items):
             r, c = divmod(i, self.grid_cols)
-            card = self._make_card(self.grid_frame, it)
+            card = self._make_card(self.grid_frame, it, local_titles)
             card.grid(row=r, column=c, padx=8, pady=8, sticky="n")
         # 새 목록을 그렸으면 스크롤을 맨 위로. (창 크기 변경으로 인한
         # 재배치일 때는 keep_scroll=True 로 현재 위치를 유지한다.)
@@ -1046,7 +1114,11 @@ class DcconApp(tk.Tk):
         target_w = max(int(min(needed_w, screen_w - 40)), 900)
         self.geometry(f"{target_w}x{target_h}")
 
-    def _make_card(self, parent, item):
+    def _make_card(self, parent, item, local_titles: set = frozenset()):
+        # 이미 저장 폴더에 다운로드되어 있는 디시콘인지 — 다운로드 시
+        # 폴더명이 sanitize_filename(제목)이므로 같은 변환을 거쳐 비교한다.
+        is_downloaded = sanitize_filename(item["title"]) in local_titles
+
         # tk.Frame + highlightthickness 로 테두리를 그려 호버 시 색만 바꿔
         # 부드러운 강조 효과를 낸다 (ttk 테두리는 색 제어가 까다로움).
         card = tk.Frame(parent, bg=COL_BG, bd=0,
@@ -1078,8 +1150,15 @@ class DcconApp(tk.Tk):
             w.configure(cursor="hand2")
 
         def _set_hover(on):
-            border = COL_ACCENT if on else COL_BORDER
-            bg = COL_HOVER_BG if on else COL_BG
+            # 호버 중에는 항상 파랑으로 강조(지금 가리키고 있다는 의미이므로
+            # 보관 여부와 무관). 호버가 아닐 때는 보관된 항목이면 초록,
+            # 아니면 기본 회색 테두리로 되돌아간다.
+            if on:
+                border, bg = COL_ACCENT, COL_HOVER_BG
+            elif is_downloaded:
+                border, bg = COL_DOWNLOADED, COL_DOWNLOADED_BG
+            else:
+                border, bg = COL_BORDER, COL_BG
             card.configure(highlightbackground=border, highlightcolor=border, bg=bg)
             inner.configure(bg=bg)
             title.configure(bg=bg)
@@ -1102,6 +1181,9 @@ class DcconApp(tk.Tk):
         for w in widgets:
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
+
+        if is_downloaded:
+            _set_hover(False)  # 초기 렌더링에 보관 하이라이트 색 적용
 
         cached = self.thumb_refs.get(item["img"])
         if cached is not None:
