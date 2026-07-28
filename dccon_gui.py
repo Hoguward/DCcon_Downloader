@@ -19,8 +19,10 @@ import json
 import time
 import struct
 import shutil
+import logging
 import tempfile
 import threading
+import traceback
 import subprocess
 from urllib.parse import quote, unquote
 from concurrent.futures import ThreadPoolExecutor
@@ -199,6 +201,33 @@ def _app_dir() -> str:
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def _setup_crash_logging():
+    """예기치 않은 예외(메인 스레드/워커 스레드/tkinter 콜백 공통)를
+    <앱폴더>/crash.log 에 남긴다. 창이 원인 모를 크래시로 튕기는 문제를
+    분석하려면 이 로그가 유일한 단서이므로, 발생 지점과 무관하게 항상
+    파일에 append 되도록 3개 훅(sys/threading/tkinter)을 모두 건다.
+    """
+    log_path = os.path.join(_app_dir(), "crash.log")
+    logging.basicConfig(
+        filename=log_path,
+        level=logging.ERROR,
+        format="%(asctime)s %(message)s",
+        encoding="utf-8",
+    )
+
+    def log_exception(exc_type, exc_value, exc_tb):
+        logging.error("Unhandled exception:\n%s",
+                       "".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+
+    sys.excepthook = log_exception
+
+    def thread_hook(args):
+        log_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+    threading.excepthook = thread_hook
+    return log_exception
 
 
 def _default_download_dir() -> str:
@@ -1260,8 +1289,16 @@ class DetailDialog(tk.Toplevel):
             self.detail = d
             self.after(0, self._render)
         except Exception as e:
-            self.after(0, lambda: messagebox.showerror("실패", str(e), parent=self))
-            self.after(0, self.destroy)
+            self.after(0, self._report_load_error, str(e))
+
+    def _report_load_error(self, message):
+        # _load/_load_local 실패를 사용자가 이미 상세창을 닫은 뒤 통보하게
+        # 되면(백그라운드 스레드라 타이밍이 어긋날 수 있음) messagebox의
+        # parent=self 가 파괴된 창을 가리켜 TclError가 난다.
+        if not self.winfo_exists():
+            return
+        messagebox.showerror("실패", message, parent=self)
+        self.destroy()
 
     def _load_local(self):
         """내 보관함 항목: 서버 재조회 없이 폴더 안 파일을 그대로 나열."""
@@ -1283,10 +1320,15 @@ class DetailDialog(tk.Toplevel):
             }
             self.after(0, self._render)
         except Exception as e:
-            self.after(0, lambda: messagebox.showerror("실패", str(e), parent=self))
-            self.after(0, self.destroy)
+            self.after(0, self._report_load_error, str(e))
 
     def _render(self):
+        # 서버 응답을 기다리는 동안(백그라운드 스레드) 사용자가 상세창을
+        # 먼저 닫아버리면(destroy) 이 콜백이 뒤늦게 실행되어 이미 파괴된
+        # 창을 조작하려다 TclError("bad window path name")가 난다 —
+        # 상세화면이 "로딩 중 튕기는" 문제의 원인이었으므로 가드 필수.
+        if not self.winfo_exists():
+            return
         for w in self.winfo_children():
             w.destroy()
 
@@ -1590,5 +1632,10 @@ class DetailDialog(tk.Toplevel):
 
 # ---------- 진입점 ----------
 if __name__ == "__main__":
+    log_exception = _setup_crash_logging()
     app = DcconApp()
+    # tkinter는 위젯 콜백(버튼 클릭, after 등) 안에서 난 예외를 기본적으로
+    # 콘솔에만 출력하고 무시한다 — .exe(콘솔 없음)에서는 이 출력조차 보이지
+    # 않아 "그냥 튕긴 것"처럼 보이는 주된 원인이었다. crash.log 에 남기도록 교체.
+    app.report_callback_exception = lambda exc, val, tb: log_exception(exc, val, tb)
     app.mainloop()
