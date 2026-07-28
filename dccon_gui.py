@@ -1262,6 +1262,38 @@ class DetailDialog(tk.Toplevel):
         ttk.Label(self, text="불러오는 중...", padding=20).pack()
         threading.Thread(target=self._load, daemon=True).start()
 
+    def destroy(self):
+        """상세창을 닫을 때 이미지 참조를 명시적으로 비운다.
+
+        GIF 움짤은 프레임마다 별도 ImageTk.PhotoImage(=GDI 비트맵 핸들)를
+        만들어 image_refs/preview_cache에 계속 쌓이는데, 창을 닫아도 이
+        캐시를 비우지 않으면 파이썬 GC 타이밍에 따라 해제가 늦어지거나
+        미뤄진다. 상세창을 여러 번 열고 닫으면 GDI 핸들이 누적되다 결국
+        tkinter 내부(tcl86t.dll)가 STATUS_BREAKPOINT로 죽는 크래시의
+        원인이었다(Windows 이벤트 로그의 APPCRASH/GDIObjectLeak로 확인).
+        진행 중인 애니메이션 after 예약도 함께 취소해 프레임 리스트를
+        붙잡고 있는 클로저를 즉시 끊는다.
+        """
+        self._cancel_anim_jobs(self)
+        super().destroy()
+        self.image_refs.clear()
+        self.preview_cache.clear()
+        self.raw_cache.clear()
+
+    @staticmethod
+    def _cancel_anim_jobs(widget):
+        """미리보기 카드는 self > canvas > inner > card > box > lbl 로
+        여러 단계 중첩되어 있어(_layout_preview_grid), _anim_job이 걸린
+        라벨까지 닿으려면 전체 트리를 재귀적으로 훑어야 한다."""
+        job = getattr(widget, "_anim_job", None)
+        if job is not None:
+            try:
+                widget.after_cancel(job)
+            except Exception:
+                pass
+        for child in widget.winfo_children():
+            DetailDialog._cancel_anim_jobs(child)
+
     def _place_over_parent(self, master, w, h):
         """상세창을 부모(썸네일) 창 위에 중앙 정렬로 배치.
 
