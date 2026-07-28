@@ -1082,16 +1082,18 @@ class DcconApp(tk.Tk):
             self.canvas.yview_moveto(0)
             return
         # 내 보관함 화면은 항목 전체가 이미 다운로드된 것이므로 하이라이트가
-        # 무의미해 계산을 건너뛴다. 그 외 화면에서는 카드마다 디스크를 다시
-        # 스캔하지 않도록 한 번만 스캔해 재사용한다.
-        local_titles = (
-            set() if self.mode.get() == "local"
-            else _local_titles(self.download_dir.get())
-        )
+        # 무의미해 계산을 건너뛴다. 그 외 화면은 카드를 먼저 하이라이트
+        # 없이 그리고, 폴더 스캔(다운로드 개수가 많으면 수백 ms~ 이상
+        # 걸릴 수 있어 메인 스레드에서 돌리면 "응답 없음"의 원인이 됨)은
+        # 백그라운드로 넘겨 끝나는 대로 하이라이트만 다시 적용한다.
+        cards = []
         for i, it in enumerate(items):
             r, c = divmod(i, self.grid_cols)
-            card = self._make_card(self.grid_frame, it, local_titles)
+            card = self._make_card(self.grid_frame, it, frozenset())
             card.grid(row=r, column=c, padx=8, pady=8, sticky="n")
+            cards.append(card)
+        if self.mode.get() != "local":
+            self._apply_highlights_async(cards)
         # 새 목록을 그렸으면 스크롤을 맨 위로. (창 크기 변경으로 인한
         # 재배치일 때는 keep_scroll=True 로 현재 위치를 유지한다.)
         if not keep_scroll:
@@ -1101,6 +1103,26 @@ class DcconApp(tk.Tk):
         if not keep_scroll and not self._did_initial_fit:
             self.after_idle(self._fit_window_to_content)
         self.set_status(f"{len(items)}개 표시")
+
+    def _apply_highlights_async(self, cards):
+        """폴더 스캔이 끝나는 대로 카드들의 보관 하이라이트를 적용.
+
+        스캔 도중 사용자가 다른 화면으로 전환하면 cards 는 이미 화면에서
+        사라진 카드일 수 있다 — refresh_highlight 내부에서 winfo_exists
+        로 걸러지므로 안전하게 무시된다.
+        """
+        download_dir = self.download_dir.get()
+
+        def task():
+            titles = _local_titles(download_dir)
+            self.after(0, self._on_highlights_ready, cards, titles)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_highlights_ready(self, cards, local_titles):
+        for card in cards:
+            if card.winfo_exists():
+                card.refresh_highlight(local_titles)
 
     def _fit_window_to_content(self):
         """카드 그리드 전체가 세로로 보이도록 창 높이를 콘텐츠에 맞춘다.
@@ -1142,6 +1164,10 @@ class DcconApp(tk.Tk):
     def _make_card(self, parent, item, local_titles: set = frozenset()):
         # 이미 저장 폴더에 다운로드되어 있는 디시콘인지 — 다운로드 시
         # 폴더명이 sanitize_filename(제목)이므로 같은 변환을 거쳐 비교한다.
+        # local_titles 는 카드 생성 시점에 아직 계산 전(빈 집합)일 수 있다
+        # (폴더 스캔은 백그라운드에서 이루어짐) — 그 경우를 대비해 이 값을
+        # nonlocal 로 들고 있다가 스캔 완료 후 refresh_highlight() 로
+        # 다시 계산할 수 있게 한다.
         is_downloaded = sanitize_filename(item["title"]) in local_titles
 
         # tk.Frame + highlightthickness 로 테두리를 그려 호버 시 색만 바꿔
@@ -1209,6 +1235,17 @@ class DcconApp(tk.Tk):
 
         if is_downloaded:
             _set_hover(False)  # 초기 렌더링에 보관 하이라이트 색 적용
+
+        def refresh_highlight(new_local_titles: set):
+            # 폴더 스캔(_local_titles)은 무거워서 카드를 먼저 하이라이트
+            # 없이 그린 뒤 백그라운드에서 계산이 끝나면 이 함수로 다시
+            # 적용한다 — _show_items 참고.
+            nonlocal is_downloaded
+            is_downloaded = sanitize_filename(item["title"]) in new_local_titles
+            if not card.winfo_exists():
+                return
+            _set_hover(False)
+        card.refresh_highlight = refresh_highlight
 
         cached = self.thumb_refs.get(item["img"])
         if cached is not None:
