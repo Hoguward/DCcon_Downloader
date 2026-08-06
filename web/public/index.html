@@ -25,6 +25,9 @@
   --sans: "맑은 고딕", "Malgun Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+/* --thumb-bg 는 다크모드에서도 일부러 바꾸지 않는다 — 디시콘은 대부분
+   흰/투명 배경에 어두운 선으로 그려져 있어서, 썸네일 배경까지 어둡게
+   하면 그림 윤곽이 배경에 묻혀 안 보이게 된다(실사용 중 발견). */
 :root[data-theme="dark"] {
   --bg: #14181f;
   --surface: #1c222c;
@@ -39,7 +42,6 @@
   --warn: #e0a94a;
   --warn-soft: #382b12;
   --danger: #e8837e;
-  --thumb-bg: #232a36;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -57,7 +59,6 @@
     --warn: #e0a94a;
     --warn-soft: #382b12;
     --danger: #e8837e;
-    --thumb-bg: #232a36;
   }
 }
 
@@ -83,6 +84,24 @@ body {
 }
 .topbar h1 { font-size: 17px; font-weight: 700; margin: 0; }
 .topbar .tagline { font-size: 12.5px; opacity: 0.85; }
+
+.theme-toggle {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.theme-toggle:hover { background: rgba(255,255,255,0.22); }
+.theme-toggle:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 .toolbar {
   background: var(--surface);
@@ -196,13 +215,14 @@ body {
   text-overflow: ellipsis;
 }
 .card .saved-pill {
-  display: inline-block;
+  display: none;
   margin-top: 4px;
   font-size: 10px;
   font-weight: 700;
   color: var(--good);
   letter-spacing: 0.02em;
 }
+.card.saved .saved-pill { display: inline-block; }
 
 .empty-state {
   padding: 60px 20px;
@@ -231,6 +251,20 @@ body {
 }
 .pager button:disabled { opacity: 0.4; cursor: default; }
 .pager span { font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+.app-promo {
+  border-top: 1px solid var(--border);
+  padding: 16px 20px 28px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+.app-promo a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+.app-promo a:hover { text-decoration: underline; }
 
 /* ---------- 상세 모달 ---------- */
 .modal-backdrop {
@@ -278,11 +312,20 @@ body {
   color: var(--ink-soft);
 }
 .modal-body {
+  /* .modal이 flex column인데 flex 자식의 기본 min-height는 auto라서,
+     이모티콘이 많아 콘텐츠가 커지면 이 영역이 .modal의 max-height(88vh)를
+     넘어 뚫고 나가버린다 — 그 결과 부모의 overflow:hidden에 아래쪽이
+     잘리면서 그리드 셀들이 겹쳐 보이는 것처럼 보였다. flex:1 로 남은
+     공간만 차지하게 하고 min-height:0 으로 그 기본값을 깨서, 넘치는 만큼은
+     이 영역 안에서만(overflow-y:auto) 스크롤되게 한다. */
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px 20px 24px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   gap: 10px;
+  align-content: start;
 }
 .modal-body .cell {
   border: 1px solid var(--border);
@@ -335,12 +378,23 @@ body {
   .search-form input { flex: 1; width: auto; }
 }
 </style>
+<script>
+// body가 그려지기 전에 저장된 테마를 즉시 적용 — <body> 안에서 하면
+// 어두운/밝은 화면이 잠깐 뒤집혀 보이는 깜빡임(FOUC)이 생긴다.
+(function () {
+  const saved = localStorage.getItem("dccon_theme");
+  if (saved === "dark" || saved === "light") {
+    document.documentElement.setAttribute("data-theme", saved);
+  }
+})();
+</script>
 </head>
 <body>
 
 <header class="topbar">
   <h1>DCcon Downloader</h1>
   <span class="tagline">디시콘 일괄 다운로더 · Web</span>
+  <button type="button" class="theme-toggle" id="theme-toggle" aria-label="어두운 화면으로 전환">🌙</button>
 </header>
 
 <nav class="toolbar">
@@ -363,6 +417,11 @@ body {
   <button id="next-page">다음 ▶</button>
 </div>
 
+<p class="app-promo">
+  저장 폴더 정리, 일괄 다운로드가 더 편한 데스크톱 앱도 있어요 —
+  <a href="https://github.com/Hoguward/DCcon_Downloader/releases/latest" target="_blank" rel="noopener">Windows용 다운로드</a>
+</p>
+
 <div class="modal-backdrop" id="modal-backdrop" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-head">
@@ -384,6 +443,28 @@ body {
 const API_BASE = window.DCCON_API_BASE || "https://web-nu-taupe-90.vercel.app";
 const SAVED_KEY = "dccon_saved_ids";      // localStorage: 다운로드한 package_idx 집합
 const LAST_MODE_KEY = "dccon_last_mode";
+const THEME_KEY = "dccon_theme";
+
+// ---------- 테마 ----------
+function isDarkNow() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "dark") return true;
+  if (attr === "light") return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+function syncThemeButton() {
+  const btn = document.getElementById("theme-toggle");
+  const dark = isDarkNow();
+  btn.textContent = dark ? "☀️" : "🌙";
+  btn.setAttribute("aria-label", dark ? "밝은 화면으로 전환" : "어두운 화면으로 전환");
+}
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const next = isDarkNow() ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem(THEME_KEY, next);
+  syncThemeButton();
+});
+syncThemeButton();
 
 // ---------- 상태 ----------
 let state = { mode: "top", period: "day", page: 1, lastPage: 1, keyword: "" };
@@ -465,11 +546,12 @@ function renderGrid(items) {
     const card = document.createElement("button");
     card.className = "card" + (savedIds.has(String(item.package_idx)) ? " saved" : "");
     card.type = "button";
+    card.dataset.packageIdx = String(item.package_idx);
     card.innerHTML = `
       <div class="thumb-box"><img src="${proxiedImage(item.img)}" alt="" loading="lazy"></div>
       <div class="title">${escapeHtml(item.title)}</div>
       <div class="seller">${escapeHtml(item.nick_name)}</div>
-      ${savedIds.has(String(item.package_idx)) ? '<span class="saved-pill">저장됨</span>' : ""}
+      <span class="saved-pill">저장됨</span>
     `;
     card.addEventListener("click", () => openDetail(item));
     grid.appendChild(card);
@@ -480,6 +562,143 @@ function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[c]);
+}
+
+// ---------- 다운로드 ----------
+const EXT_BY_CONTENT_TYPE = {
+  "image/gif": "gif",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+
+async function fetchImageBytes(url) {
+  // <a download="icon_1"> 처럼 정적 속성만으로는 서버가 실제로 무슨
+  // 포맷을 보냈는지 알 수 없어(클릭 전에는 요청 자체가 안 감) 파일명에
+  // 확장자를 붙일 수 없었다 — 특히 GIF가 확장자 없이 저장되면 일부
+  // OS/뷰어가 정지 이미지로 오인해 애니메이션이 재생되지 않는다.
+  // fetch로 직접 받아 Content-Type을 확인한 뒤에 파일명을 정한다.
+  const res = await fetch(`${API_BASE}/api/image?url=${encodeURIComponent(url)}`);
+  if (!res.ok) throw new Error(`이미지를 받지 못함 (HTTP ${res.status})`);
+  const contentType = (res.headers.get("Content-Type") || "").split(";")[0].trim();
+  const ext = EXT_BY_CONTENT_TYPE[contentType] || "png";
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  return { bytes, ext };
+}
+
+function saveBlob(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+async function downloadSingleImage(url, baseName, linkEl) {
+  const original = linkEl.textContent;
+  linkEl.textContent = "받는 중…";
+  try {
+    const { bytes, ext } = await fetchImageBytes(url);
+    saveBlob(new Blob([bytes]), `${baseName}.${ext}`);
+  } catch (err) {
+    alert(`다운로드 실패: ${err.message}`);
+  } finally {
+    linkEl.textContent = original;
+  }
+}
+
+// ---------- ZIP (store 방식 — 무압축, 외부 라이브러리 없이 직접 작성) ----------
+// PNG/JPG/GIF는 이미 압축된 포맷이라 deflate로 다시 압축해도 거의
+// 줄어들지 않는다 — store(무압축) 방식이면 압축 알고리즘 구현 없이도
+// 표준 ZIP 리더(탐색기, 반디집 등)가 그대로 열 수 있어 이 쪽을 택했다.
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function dosDateTime(date) {
+  const time = ((date.getHours() & 0x1f) << 11) | ((date.getMinutes() & 0x3f) << 5) | ((date.getSeconds() >> 1) & 0x1f);
+  const day = (((date.getFullYear() - 1980) & 0x7f) << 9) | (((date.getMonth() + 1) & 0xf) << 5) | (date.getDate() & 0x1f);
+  return { time, day };
+}
+function buildZip(files) {
+  // files: [{name: string, data: Uint8Array}]
+  const encoder = new TextEncoder();
+  const { time, day } = dosDateTime(new Date());
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = encoder.encode(file.name);
+    const crc = crc32(file.data);
+    const size = file.data.length;
+
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0, true);
+    local.setUint16(8, 0, true); // store = 압축 없음
+    local.setUint16(10, time, true);
+    local.setUint16(12, day, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, size, true);
+    local.setUint32(22, size, true);
+    local.setUint16(26, nameBytes.length, true);
+    local.setUint16(28, 0, true);
+    localParts.push(new Uint8Array(local.buffer), nameBytes, file.data);
+
+    const central = new DataView(new ArrayBuffer(46));
+    central.setUint32(0, 0x02014b50, true);
+    central.setUint16(4, 20, true);
+    central.setUint16(6, 20, true);
+    central.setUint16(8, 0, true);
+    central.setUint16(10, 0, true);
+    central.setUint16(12, time, true);
+    central.setUint16(14, day, true);
+    central.setUint32(16, crc, true);
+    central.setUint32(20, size, true);
+    central.setUint32(24, size, true);
+    central.setUint16(28, nameBytes.length, true);
+    central.setUint16(30, 0, true);
+    central.setUint16(32, 0, true);
+    central.setUint16(34, 0, true);
+    central.setUint16(36, 0, true);
+    central.setUint32(38, 0, true);
+    central.setUint32(42, offset, true);
+    centralParts.push(new Uint8Array(central.buffer), nameBytes);
+
+    offset += local.buffer.byteLength + nameBytes.length + size;
+  }
+
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const p of centralParts) centralSize += p.length;
+
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(4, 0, true);
+  end.setUint16(6, 0, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, centralStart, true);
+  end.setUint16(20, 0, true);
+
+  return new Blob([...localParts, ...centralParts, new Uint8Array(end.buffer)], { type: "application/zip" });
 }
 
 // ---------- 상세 모달 ----------
@@ -502,11 +721,16 @@ async function openDetail(item) {
     detail.urls.forEach((url, i) => {
       const cell = document.createElement("div");
       cell.className = "cell";
-      const name = i === 0 ? "main_img" : `icon_${i}`;
+      const baseName = i === 0 ? "main_img" : `icon_${i}`;
       cell.innerHTML = `
         <img src="${proxiedImage(url)}" alt="" loading="lazy">
-        <a class="dl" href="${API_BASE}/api/image?url=${encodeURIComponent(url)}" download="${name}">저장</a>
+        <a class="dl" href="#" role="button">저장</a>
       `;
+      const link = cell.querySelector("a.dl");
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        downloadSingleImage(url, baseName, link);
+      });
       body.appendChild(cell);
     });
 
@@ -518,33 +742,43 @@ async function openDetail(item) {
 }
 
 async function downloadAllAsZip(item, detail) {
-  // 외부 zip 라이브러리 없이, 이미지를 개별적으로 순차 다운로드한다.
-  // (일괄 zip 압축은 클라이언트 zip 라이브러리 도입이 필요 — web/README.md 2단계 참고)
   const btn = document.getElementById("modal-download-all");
   const status = document.getElementById("zip-status");
   btn.disabled = true;
-  for (let i = 0; i < detail.urls.length; i++) {
-    status.textContent = `${i + 1}/${detail.urls.length} 다운로드 중…`;
-    const name = i === 0 ? "main_img" : `icon_${i}`;
-    const a = document.createElement("a");
-    a.href = `${API_BASE}/api/image?url=${encodeURIComponent(detail.urls[i])}`;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    await new Promise((r) => setTimeout(r, 250));
+  try {
+    const files = [];
+    for (let i = 0; i < detail.urls.length; i++) {
+      status.textContent = `${i + 1}/${detail.urls.length} 받는 중…`;
+      const baseName = i === 0 ? "main_img" : `icon_${i}`;
+      const { bytes, ext } = await fetchImageBytes(detail.urls[i]);
+      files.push({ name: `${baseName}.${ext}`, data: bytes });
+    }
+    status.textContent = "압축하는 중…";
+    const zipBlob = buildZip(files);
+    const zipName = `${sanitizeFilename(item.title) || "dccon"}.zip`;
+    saveBlob(zipBlob, zipName);
+    status.textContent = "다운로드 완료";
+    markSaved(item.package_idx);
+    refreshSavedBadge(item.package_idx);
+  } catch (err) {
+    status.textContent = `실패: ${err.message}`;
+  } finally {
+    btn.disabled = false;
   }
-  status.textContent = "다운로드 완료";
-  markSaved(item.package_idx);
-  btn.disabled = false;
-  renderSavedOnCurrentGrid();
 }
 
-function renderSavedOnCurrentGrid() {
-  const savedIds = getSavedIds();
-  document.querySelectorAll(".card").forEach((card) => {
-    // 재조회 없이 캐시된 DOM에는 반영하지 않음 — 다음 loadCurrent()에서 갱신됨.
-  });
+function sanitizeFilename(name) {
+  // Windows 등에서 파일명에 못 쓰는 문자만 최소한으로 치환.
+  return String(name || "").replace(/[\\/:*?"<>|]/g, "_").trim();
+}
+
+function refreshSavedBadge(packageIdx) {
+  // 방금 다운로드한 항목이 지금 화면에 카드로 떠 있으면(같은 목록에서
+  // 바로 다운로드한 경우) 화면을 다시 불러오지 않고도 그 카드에만
+  // "저장됨" 표시를 즉시 붙인다. saved-pill은 항상 DOM에 있고
+  // .card.saved 일 때만 CSS로 보이므로 클래스 토글만으로 충분하다.
+  const card = document.querySelector(`.card[data-package-idx="${CSS.escape(String(packageIdx))}"]`);
+  if (card) card.classList.add("saved");
 }
 
 document.getElementById("modal-close").addEventListener("click", () => {
