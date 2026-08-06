@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCcon Downloader — Web</title>
+<meta name="description" content="디시인사이드 디시콘을 브라우저에서 바로 찾아보고 저장하는 웹 버전.">
+<style>
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --border: #dfe1e5;
+  --ink: #222222;
+  --ink-soft: #5f6b7a;
+  --ink-faint: #9aa2b1;
+  --accent: #1e5fdb;
+  --accent-soft: #e8f0fe;
+  --good: #1d9e75;
+  --good-soft: #e6f7f1;
+  --warn: #ba7517;
+  --warn-soft: #fbf0dd;
+  --danger: #e24b4a;
+  --thumb-bg: #f4f6f8;
+  --radius: 10px;
+  --sans: "맑은 고딕", "Malgun Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --bg: #14181f;
+  --surface: #1c222c;
+  --border: #2c3341;
+  --ink: #e8e6df;
+  --ink-soft: #aab0bd;
+  --ink-faint: #6f7688;
+  --accent: #6ba8f5;
+  --accent-soft: #1e2c40;
+  --good: #4fd3a3;
+  --good-soft: #16302a;
+  --warn: #e0a94a;
+  --warn-soft: #382b12;
+  --danger: #e8837e;
+  --thumb-bg: #232a36;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14181f;
+    --surface: #1c222c;
+    --border: #2c3341;
+    --ink: #e8e6df;
+    --ink-soft: #aab0bd;
+    --ink-faint: #6f7688;
+    --accent: #6ba8f5;
+    --accent-soft: #1e2c40;
+    --good: #4fd3a3;
+    --good-soft: #16302a;
+    --warn: #e0a94a;
+    --warn-soft: #382b12;
+    --danger: #e8837e;
+    --thumb-bg: #232a36;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.5;
+}
+
+/* ---------- 상단 바 ---------- */
+.topbar {
+  background: var(--accent);
+  color: #fff;
+  padding: 14px 20px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.topbar h1 { font-size: 17px; font-weight: 700; margin: 0; }
+.topbar .tagline { font-size: 12.5px; opacity: 0.85; }
+
+.toolbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.tab {
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 7px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.tab:hover { background: var(--accent-soft); color: var(--accent); }
+.tab[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.search-form { display: flex; gap: 6px; margin-left: auto; }
+.search-form input {
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 7px 12px;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--ink);
+  width: 200px;
+}
+.search-form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.search-form button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: 100px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.status-row {
+  padding: 10px 20px 0;
+  font-size: 13px;
+  color: var(--ink-faint);
+  min-height: 20px;
+}
+
+/* ---------- 카드 그리드 ---------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 16px;
+  padding: 16px 20px 40px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.12s, background 0.12s, transform 0.08s;
+}
+.card:hover { border-color: var(--accent); background: var(--accent-soft); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card.saved { border-color: var(--good); background: var(--good-soft); }
+.card.saved:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+.card .thumb-box {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  background: var(--thumb-bg);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+.card img { width: 100%; height: 100%; object-fit: contain; }
+.card .title {
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card .seller {
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card .saved-pill {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--good);
+  letter-spacing: 0.02em;
+}
+
+.empty-state {
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 14px;
+}
+
+/* ---------- 페이지네이션 ---------- */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 0 20px 36px;
+}
+.pager button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.pager button:disabled { opacity: 0.4; cursor: default; }
+.pager span { font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+/* ---------- 상세 모달 ---------- */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(10, 14, 20, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+.modal-backdrop[hidden] { display: none; }
+
+.modal {
+  background: var(--surface);
+  border-radius: 14px;
+  width: min(720px, 100%);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-head {
+  background: var(--accent);
+  color: #fff;
+  padding: 16px 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.modal-head h2 { font-size: 16px; margin: 0; flex: 1; }
+.modal-head .close-btn {
+  background: rgba(255,255,255,0.15);
+  border: none;
+  color: #fff;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.modal-meta {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.modal-body {
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+.modal-body .cell {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: var(--thumb-bg);
+  position: relative;
+}
+.modal-body .cell img { width: 100%; height: 100%; object-fit: contain; }
+.modal-body .cell a.dl {
+  position: absolute; right: 4px; bottom: 4px;
+  background: rgba(20,24,31,0.72);
+  color: #fff;
+  font-size: 10px;
+  padding: 3px 7px;
+  border-radius: 100px;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.modal-body .cell:hover a.dl,
+.modal-body .cell:focus-within a.dl { opacity: 1; }
+
+.modal-actions {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.btn-primary {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.btn-primary:disabled { opacity: 0.5; cursor: default; }
+.zip-status { font-size: 12px; color: var(--ink-faint); }
+
+.loading-row { padding: 40px; text-align: center; color: var(--ink-faint); font-size: 13px; }
+
+@media (max-width: 520px) {
+  .search-form { width: 100%; margin-left: 0; }
+  .search-form input { flex: 1; width: auto; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>DCcon Downloader</h1>
+  <span class="tagline">디시콘 일괄 다운로더 · Web</span>
+</header>
+
+<nav class="toolbar">
+  <button class="tab" data-mode="top" data-period="day" aria-pressed="true">일간 인기</button>
+  <button class="tab" data-mode="top" data-period="week" aria-pressed="false">주간 인기</button>
+  <button class="tab" data-mode="new" aria-pressed="false">NEW</button>
+  <form class="search-form" id="search-form">
+    <input type="search" id="search-input" placeholder="디시콘 검색" aria-label="디시콘 검색">
+    <button type="submit">찾기</button>
+  </form>
+</nav>
+
+<p class="status-row" id="status" role="status" aria-live="polite"></p>
+
+<main id="grid" class="grid" aria-live="polite"></main>
+
+<div class="pager" id="pager" hidden>
+  <button id="prev-page">◀ 이전</button>
+  <span id="page-label">1 / 1</span>
+  <button id="next-page">다음 ▶</button>
+</div>
+
+<div class="modal-backdrop" id="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button class="close-btn" id="modal-close" aria-label="닫기">✕</button>
+    </div>
+    <div class="modal-meta" id="modal-meta"></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn-primary" id="modal-download-all">전체 다운로드 (zip)</button>
+      <span class="zip-status" id="zip-status"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------- 설정 ----------
+// 배포 시 실제 Vercel 프록시 주소로 교체한다 (web/README.md 참고).
+const API_BASE = window.DCCON_API_BASE || "https://web-nu-taupe-90.vercel.app";
+const SAVED_KEY = "dccon_saved_ids";      // localStorage: 다운로드한 package_idx 집합
+const LAST_MODE_KEY = "dccon_last_mode";
+
+// ---------- 상태 ----------
+let state = { mode: "top", period: "day", page: 1, lastPage: 1, keyword: "" };
+
+// ---------- 유틸 ----------
+function getSavedIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(SAVED_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+function markSaved(id) {
+  const ids = getSavedIds();
+  ids.add(String(id));
+  localStorage.setItem(SAVED_KEY, JSON.stringify([...ids]));
+}
+function setStatus(text) { document.getElementById("status").textContent = text; }
+
+function proxiedImage(url) {
+  // dcimg5.dcinside.com은 Referer가 정확히 https://dccon.dcinside.com/ 인
+  // 요청만 허용하고 그 외엔 403을 반환한다(실측 확인). 브라우저의 <img>
+  // 태그는 이 페이지 자신의 URL을 Referer로 보내므로 원본 주소를 그대로
+  // 쓰면 이미지가 전부 깨진다. 모든 이미지를 /api/image 프록시로 우회
+  // 시켜야 한다 — 프록시(서버 간 요청)는 정확한 Referer를 세션에 이미
+  // 세팅해두었으므로 통과한다.
+  return `${API_BASE}/api/image?url=${encodeURIComponent(url)}`;
+}
+
+// ---------- 목록 렌더 ----------
+async function loadCurrent() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = '<p class="loading-row">불러오는 중…</p>';
+  document.getElementById("pager").hidden = true;
+
+  try {
+    let items, lastPage = 1, showPager = true;
+    if (state.mode === "top") {
+      setStatus(`${state.period === "day" ? "일간" : "주간"} 인기 디시콘을 불러오는 중…`);
+      const res = await fetch(`${API_BASE}/api/top5?kind=${state.period}`);
+      const data = await res.json();
+      items = data.items || [];
+      showPager = false;
+    } else if (state.mode === "new") {
+      setStatus(`NEW ${state.page}페이지 불러오는 중…`);
+      const res = await fetch(`${API_BASE}/api/list?kind=new&page=${state.page}`);
+      const data = await res.json();
+      items = data.items || [];
+      lastPage = data.last_page || 1;
+    } else {
+      setStatus(`"${state.keyword}" 검색 중…`);
+      const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(state.keyword)}&page=${state.page}`);
+      const data = await res.json();
+      items = data.items || [];
+      lastPage = data.total_pages || 1;
+      setStatus(`검색 결과 ${data.num_text || ""}`);
+    }
+    state.lastPage = lastPage;
+    renderGrid(items);
+    if (showPager) {
+      document.getElementById("pager").hidden = false;
+      document.getElementById("page-label").textContent = `${state.page} / ${state.lastPage}`;
+      document.getElementById("prev-page").disabled = state.page <= 1;
+      document.getElementById("next-page").disabled = state.page >= state.lastPage;
+    }
+    if (state.mode !== "search") setStatus(`${items.length}개 표시`);
+  } catch (err) {
+    setStatus(`불러오기 실패: ${err.message} (프록시 주소 설정을 확인하세요)`);
+    document.getElementById("grid").innerHTML = "";
+  }
+}
+
+function renderGrid(items) {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  if (!items.length) {
+    grid.innerHTML = '<p class="empty-state">결과가 없습니다.</p>';
+    return;
+  }
+  const savedIds = getSavedIds();
+  for (const item of items) {
+    const card = document.createElement("button");
+    card.className = "card" + (savedIds.has(String(item.package_idx)) ? " saved" : "");
+    card.type = "button";
+    card.innerHTML = `
+      <div class="thumb-box"><img src="${proxiedImage(item.img)}" alt="" loading="lazy"></div>
+      <div class="title">${escapeHtml(item.title)}</div>
+      <div class="seller">${escapeHtml(item.nick_name)}</div>
+      ${savedIds.has(String(item.package_idx)) ? '<span class="saved-pill">저장됨</span>' : ""}
+    `;
+    card.addEventListener("click", () => openDetail(item));
+    grid.appendChild(card);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+// ---------- 상세 모달 ----------
+async function openDetail(item) {
+  const backdrop = document.getElementById("modal-backdrop");
+  const body = document.getElementById("modal-body");
+  document.getElementById("modal-title").textContent = item.title;
+  document.getElementById("modal-meta").textContent = "불러오는 중…";
+  body.innerHTML = "";
+  document.getElementById("zip-status").textContent = "";
+  backdrop.hidden = false;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/detail?id=${item.package_idx}`);
+    const detail = await res.json();
+    document.getElementById("modal-meta").textContent =
+      [detail.seller, detail.tags && `태그: ${detail.tags}`].filter(Boolean).join(" · ");
+
+    body.innerHTML = "";
+    detail.urls.forEach((url, i) => {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      const name = i === 0 ? "main_img" : `icon_${i}`;
+      cell.innerHTML = `
+        <img src="${proxiedImage(url)}" alt="" loading="lazy">
+        <a class="dl" href="${API_BASE}/api/image?url=${encodeURIComponent(url)}" download="${name}">저장</a>
+      `;
+      body.appendChild(cell);
+    });
+
+    const downloadAllBtn = document.getElementById("modal-download-all");
+    downloadAllBtn.onclick = () => downloadAllAsZip(item, detail);
+  } catch (err) {
+    document.getElementById("modal-meta").textContent = `불러오기 실패: ${err.message}`;
+  }
+}
+
+async function downloadAllAsZip(item, detail) {
+  // 외부 zip 라이브러리 없이, 이미지를 개별적으로 순차 다운로드한다.
+  // (일괄 zip 압축은 클라이언트 zip 라이브러리 도입이 필요 — web/README.md 2단계 참고)
+  const btn = document.getElementById("modal-download-all");
+  const status = document.getElementById("zip-status");
+  btn.disabled = true;
+  for (let i = 0; i < detail.urls.length; i++) {
+    status.textContent = `${i + 1}/${detail.urls.length} 다운로드 중…`;
+    const name = i === 0 ? "main_img" : `icon_${i}`;
+    const a = document.createElement("a");
+    a.href = `${API_BASE}/api/image?url=${encodeURIComponent(detail.urls[i])}`;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  status.textContent = "다운로드 완료";
+  markSaved(item.package_idx);
+  btn.disabled = false;
+  renderSavedOnCurrentGrid();
+}
+
+function renderSavedOnCurrentGrid() {
+  const savedIds = getSavedIds();
+  document.querySelectorAll(".card").forEach((card) => {
+    // 재조회 없이 캐시된 DOM에는 반영하지 않음 — 다음 loadCurrent()에서 갱신됨.
+  });
+}
+
+document.getElementById("modal-close").addEventListener("click", () => {
+  document.getElementById("modal-backdrop").hidden = true;
+});
+document.getElementById("modal-backdrop").addEventListener("click", (e) => {
+  if (e.target.id === "modal-backdrop") e.target.hidden = true;
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.getElementById("modal-backdrop").hidden = true;
+});
+
+// ---------- 탭 / 검색 / 페이지네이션 ----------
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-pressed", "false"));
+    btn.setAttribute("aria-pressed", "true");
+    state.mode = btn.dataset.mode;
+    state.period = btn.dataset.period || state.period;
+    state.page = 1;
+    localStorage.setItem(LAST_MODE_KEY, JSON.stringify({ mode: state.mode, period: state.period }));
+    loadCurrent();
+  });
+});
+
+document.getElementById("search-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const kw = document.getElementById("search-input").value.trim();
+  if (!kw) return;
+  document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-pressed", "false"));
+  state.mode = "search";
+  state.keyword = kw;
+  state.page = 1;
+  loadCurrent();
+});
+
+document.getElementById("prev-page").addEventListener("click", () => {
+  if (state.page > 1) { state.page--; loadCurrent(); }
+});
+document.getElementById("next-page").addEventListener("click", () => {
+  if (state.page < state.lastPage) { state.page++; loadCurrent(); }
+});
+
+// ---------- 초기 로드 ----------
+loadCurrent();
+</script>
+</body>
+</html>
