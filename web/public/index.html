@@ -21,6 +21,7 @@
   --warn-soft: #fbf0dd;
   --danger: #e24b4a;
   --thumb-bg: #f4f6f8;
+  --modal-well: #e4e7ec;
   --radius: 10px;
   --sans: "맑은 고딕", "Malgun Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -31,10 +32,10 @@
 :root[data-theme="dark"] {
   --bg: #14181f;
   --surface: #1c222c;
-  --border: #2c3341;
+  --border: #454f66;
   --ink: #e8e6df;
   --ink-soft: #aab0bd;
-  --ink-faint: #6f7688;
+  --ink-faint: #949cad;
   --accent: #6ba8f5;
   --accent-soft: #1e2c40;
   --good: #4fd3a3;
@@ -42,16 +43,17 @@
   --warn: #e0a94a;
   --warn-soft: #382b12;
   --danger: #e8837e;
+  --modal-well: #0c0f14;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #14181f;
     --surface: #1c222c;
-    --border: #2c3341;
+    --border: #454f66;
     --ink: #e8e6df;
     --ink-soft: #aab0bd;
-    --ink-faint: #6f7688;
+    --ink-faint: #949cad;
     --accent: #6ba8f5;
     --accent-soft: #1e2c40;
     --good: #4fd3a3;
@@ -59,6 +61,7 @@
     --warn: #e0a94a;
     --warn-soft: #382b12;
     --danger: #e8837e;
+    --modal-well: #0c0f14;
   }
 }
 
@@ -322,9 +325,24 @@ body {
   min-height: 0;
   overflow-y: auto;
   padding: 16px 20px 24px;
+  /* 셀들 사이를 낮은 톤의 패널(--modal-well)로 채운다 — 확대 검증
+     결과 셀 자체는 정사각형/테두리 모두 정확히 그려지고 있었지만,
+     디시콘 이미지 대부분이 "같은 캐릭터의 연속 장면"이라 셀 사이
+     여백만으로는 시각적으로 하나로 이어붙어 보였다(콘텐츠 특성).
+     gap을 크게 벌리고 그 틈의 배경색 자체를 셀 배경(밝은 --thumb-bg)
+     과 뚜렷이 다른 톤으로 채워야 "각각 분리된 카드"로 인식된다. */
+  background: var(--modal-well);
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  /* 진짜 원인: grid-auto-rows 기본값(auto)에서는 aspect-ratio로 계산된
+     셀 높이가 트랙 사이징에 반영되지 않아, 다음 행이 훨씬 이른 지점
+     (실측 25px 뒤, 셀 실제 높이는 117px)에서 시작해 버렸다 — 셀 자체는
+     정사각형으로 정확히 그려지는데 행끼리 92px씩 겹쳐 들어가 있었던
+     것. auto-fill 그리드는 열 폭을 런타임에 결정하므로 고정 px 대신
+     같은 minmax를 auto-rows에도 그대로 적용해 열=행 트랙 크기를
+     일치시킨다. */
+  grid-auto-rows: minmax(110px, 1fr);
+  gap: 20px;
   align-content: start;
 }
 .modal-body .cell {
@@ -334,8 +352,9 @@ body {
   overflow: hidden;
   background: var(--thumb-bg);
   position: relative;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.28);
 }
-.modal-body .cell img { width: 100%; height: 100%; object-fit: contain; }
+.modal-body .cell img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .modal-body .cell a.dl {
   position: absolute; right: 4px; bottom: 4px;
   background: rgba(20,24,31,0.72);
