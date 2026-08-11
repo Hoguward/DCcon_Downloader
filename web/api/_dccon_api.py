@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://dccon.dcinside.com"
 DETAIL_URL = f"{BASE}/index/package_detail"
-TOP5_URL = "https://json2.dcinside.com/json1/dccon_{kind}_top5.php?jsoncallback={kind}_top5"
+TOP_URL = "https://json2.dcinside.com/json1/dccon_{kind}_top100.php?jsoncallback=cb"
 IMG_URL = "https://dcimg5.dcinside.com/dccon.php?no={path}"
 
 HEADERS = {
@@ -47,9 +47,10 @@ class DcconAPI:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
-    def get_top5(self, kind: str):
-        """kind in {'day','week'}. JSONP 응답에서 배열만 추출."""
-        url = TOP5_URL.format(kind=kind)
+    def get_top(self, kind: str):
+        """kind in {'day','week','month'}. TOP100 JSONP 응답에서 배열만
+        추출한다(각 항목에 1~100의 rank 필드 포함)."""
+        url = TOP_URL.format(kind=kind)
         r = self.session.get(url, timeout=15)
         r.raise_for_status()
         txt = r.text
@@ -73,15 +74,18 @@ class DcconAPI:
         items = self._parse_listbox(soup, ".dccon_listbox .div_package")
         return last_page, items
 
-    def search(self, keyword: str, page: int = 1, sort: str = "hot"):
-        """검색. (검색결과수문자열, 페이지수, items)"""
+    def search(self, keyword: str, page: int = 1, sort: str = "hot", category: str = "title"):
+        """검색. (검색결과수문자열, 페이지수, items)
+
+        category in {'title','nick_name','tags'} — 디시콘명/닉네임/태그.
+        """
         encoded = quote(keyword, safe="")
-        url = f"{BASE}/{sort}/{page}/title/{encoded}"
+        url = f"{BASE}/{sort}/{page}/{category}/{encoded}"
         r = self.session.get(url, timeout=20)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
-        if "/title/" not in r.url:
+        if f"/{category}/" not in r.url:
             return "(0건)", 0, []
 
         tag = soup.select_one(".search_num")

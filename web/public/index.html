@@ -150,6 +150,17 @@ body {
   width: 200px;
 }
 .search-form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.search-form select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+.search-form select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .search-form button {
   font-family: inherit;
   font-size: 13px;
@@ -192,6 +203,7 @@ body {
 .card.saved:hover { border-color: var(--accent); background: var(--accent-soft); }
 
 .card .thumb-box {
+  position: relative;
   width: 100%;
   aspect-ratio: 1;
   border-radius: 6px;
@@ -203,6 +215,18 @@ body {
   margin-bottom: 8px;
 }
 .card img { width: 100%; height: 100%; object-fit: contain; }
+.rank-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 100px;
+  line-height: 1.4;
+}
 .card .title {
   font-size: 12.5px;
   font-weight: 700;
@@ -409,7 +433,6 @@ body {
 </script>
 </head>
 <body>
-
 <header class="topbar">
   <h1>DCcon Downloader</h1>
   <span class="tagline">디시콘 일괄 다운로더 · Web</span>
@@ -419,8 +442,14 @@ body {
 <nav class="toolbar">
   <button class="tab" data-mode="top" data-period="day" aria-pressed="true">일간 인기</button>
   <button class="tab" data-mode="top" data-period="week" aria-pressed="false">주간 인기</button>
+  <button class="tab" data-mode="top" data-period="month" aria-pressed="false">월간 인기</button>
   <button class="tab" data-mode="new" aria-pressed="false">NEW</button>
   <form class="search-form" id="search-form">
+    <select id="search-category" aria-label="검색 카테고리">
+      <option value="title" selected>디시콘명</option>
+      <option value="nick_name">닉네임</option>
+      <option value="tags">태그</option>
+    </select>
     <input type="search" id="search-input" placeholder="디시콘 검색" aria-label="디시콘 검색">
     <button type="submit">찾기</button>
   </form>
@@ -486,7 +515,7 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
 syncThemeButton();
 
 // ---------- 상태 ----------
-let state = { mode: "top", period: "day", page: 1, lastPage: 1, keyword: "" };
+let state = { mode: "top", period: "day", page: 1, lastPage: 1, keyword: "", category: "title" };
 
 // ---------- 유틸 ----------
 function getSavedIds() {
@@ -519,7 +548,8 @@ async function loadCurrent() {
   try {
     let items, lastPage = 1, showPager = true;
     if (state.mode === "top") {
-      setStatus(`${state.period === "day" ? "일간" : "주간"} 인기 디시콘을 불러오는 중…`);
+      const periodLabel = state.period === "day" ? "일간" : state.period === "week" ? "주간" : "월간";
+      setStatus(`${periodLabel} 인기 디시콘을 불러오는 중…`);
       const res = await fetch(`${API_BASE}/api/top5?kind=${state.period}`);
       const data = await res.json();
       items = data.items || [];
@@ -532,7 +562,7 @@ async function loadCurrent() {
       lastPage = data.last_page || 1;
     } else {
       setStatus(`"${state.keyword}" 검색 중…`);
-      const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(state.keyword)}&page=${state.page}`);
+      const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(state.keyword)}&page=${state.page}&category=${state.category}`);
       const data = await res.json();
       items = data.items || [];
       lastPage = data.total_pages || 1;
@@ -567,7 +597,10 @@ function renderGrid(items) {
     card.type = "button";
     card.dataset.packageIdx = String(item.package_idx);
     card.innerHTML = `
-      <div class="thumb-box"><img src="${proxiedImage(item.img)}" alt="" loading="lazy"></div>
+      <div class="thumb-box">
+        <img src="${proxiedImage(item.img)}" alt="" loading="lazy">
+        ${item.rank ? `<span class="rank-badge">${escapeHtml(String(item.rank))}</span>` : ""}
+      </div>
       <div class="title">${escapeHtml(item.title)}</div>
       <div class="seller">${escapeHtml(item.nick_name)}</div>
       <span class="saved-pill">저장됨</span>
@@ -830,6 +863,7 @@ document.getElementById("search-form").addEventListener("submit", (e) => {
   document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-pressed", "false"));
   state.mode = "search";
   state.keyword = kw;
+  state.category = document.getElementById("search-category").value;
   state.page = 1;
   loadCurrent();
 });

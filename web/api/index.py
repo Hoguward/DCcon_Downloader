@@ -40,9 +40,9 @@ api = DcconAPI()
 
 
 @app.get("/api/top5")
-def top5(kind: str = Query("day", pattern="^(day|week)$")):
+def top5(kind: str = Query("day", pattern="^(day|week|month)$")):
     try:
-        items = api.get_top5(kind)
+        items = api.get_top(kind)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"upstream error: {e}")
     return {"items": items}
@@ -58,11 +58,16 @@ def list_(kind: str = Query("new", pattern="^(new|hot)$"), page: int = Query(1, 
 
 
 @app.get("/api/search")
-def search(q: str, page: int = Query(1, ge=1), sort: str = "hot"):
+def search(
+    q: str,
+    page: int = Query(1, ge=1),
+    sort: str = "hot",
+    category: str = Query("title", pattern="^(title|nick_name|tags)$"),
+):
     if not q.strip():
         raise HTTPException(status_code=400, detail="q is required")
     try:
-        num_text, total_pages, items = api.search(q, page, sort)
+        num_text, total_pages, items = api.search(q, page, sort, category)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"upstream error: {e}")
     return {"num_text": num_text, "total_pages": total_pages, "items": items}

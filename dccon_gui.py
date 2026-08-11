@@ -79,7 +79,7 @@ except Exception:
 # ---------- 설정 ----------
 BASE = "https://dccon.dcinside.com"
 DETAIL_URL = f"{BASE}/index/package_detail"
-TOP5_URL = "https://json2.dcinside.com/json1/dccon_{kind}_top5.php?jsoncallback={kind}_top5"
+TOP_URL = "https://json2.dcinside.com/json1/dccon_{kind}_top100.php?jsoncallback=cb"
 IMG_URL = "https://dcimg5.dcinside.com/dccon.php?no={path}"
 
 HEADERS = {
@@ -103,6 +103,10 @@ THUMB_WORKERS = 16      # 썸네일/미리보기 동시 다운로드 스레드 �
 THUMB_CACHE_MAX = 800   # 메모리에 유지할 썸네일 최대 개수 (초과 시 오래된 것부터 제거)
 LIST_CACHE_TTL = 600    # 일간/주간 인기·NEW 목록 캐시 유효 시간(초) = 10분
 GRID_COLS = 5           # 카드 그리드 최소/기본 열 수
+
+# 검색 카테고리: 콤보박스 표시 라벨 -> 실제 URL 세그먼트 값.
+# dict 순서가 곧 콤보박스 옵션 순서(파이썬 3.7+ dict는 삽입 순서 보존).
+SEARCH_CATEGORIES = {"디시콘명": "title", "닉네임": "nick_name", "태그": "tags"}
 
 # 색상 팔레트 (카드/호버 등 UI 공용) — DCinside 계열 근사값
 COL_BG = "#ffffff"
@@ -203,13 +207,52 @@ def _app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _config_dir() -> str:
+    """config.json/crash.log 등 사용자별 영속 설정을 저장할 안정적인 폴더.
+
+    _app_dir()(exe가 실제로 위치한 폴더)를 쓰면, 사용자가 새 버전 exe를
+    다른 폴더(예: 다운로드 폴더)에서 실행할 때마다 이전 설정을 못 찾아
+    초기화된 것처럼 보이는 문제가 있었다. exe를 어디로 옮기거나 새
+    버전으로 교체해도 항상 같은 위치를 가리키도록 Windows 사용자 프로필
+    하위 APPDATA를 쓴다. APPDATA가 없는 비정상 환경에서는 기존 동작
+    (_app_dir())으로 폴백한다.
+    """
+    base = os.getenv("APPDATA") or _app_dir()
+    path = os.path.join(base, "DCconDownloader")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        return _app_dir()
+    return path
+
+
+def _migrate_legacy_config():
+    """구버전(exe 폴더에 config.json을 저장하던 시절)의 설정을 1회 이전.
+
+    새 위치에 이미 파일이 있으면(마이그레이션 완료, 또는 신규 사용자)
+    아무 것도 하지 않는다. exe 폴더의 구 파일은 삭제하지 않고 그대로
+    둔다 — 사용자가 구버전 exe도 함께 쓰고 있을 가능성을 배려해 원본
+    보존(copy) 방식을 쓴다.
+    """
+    if os.path.exists(CONFIG_PATH):
+        return
+    legacy_path = os.path.join(_app_dir(), "config.json")
+    if os.path.exists(legacy_path):
+        try:
+            shutil.copy2(legacy_path, CONFIG_PATH)
+        except Exception:
+            pass
+
+
 def _setup_crash_logging():
     """예기치 않은 예외(메인 스레드/워커 스레드/tkinter 콜백 공통)를
-    <앱폴더>/crash.log 에 남긴다. 창이 원인 모를 크래시로 튕기는 문제를
+    <설정폴더>/crash.log 에 남긴다. 창이 원인 모를 크래시로 튕기는 문제를
     분석하려면 이 로그가 유일한 단서이므로, 발생 지점과 무관하게 항상
     파일에 append 되도록 3개 훅(sys/threading/tkinter)을 모두 건다.
+    config.json과 동일하게 _config_dir()를 써서, exe를 옮기거나 새
+    버전으로 교체해도 로그가 계속 같은 위치에 쌓이게 한다.
     """
-    log_path = os.path.join(_app_dir(), "crash.log")
+    log_path = os.path.join(_config_dir(), "crash.log")
     logging.basicConfig(
         filename=log_path,
         level=logging.ERROR,
@@ -250,8 +293,10 @@ def _default_download_dir() -> str:
 
 DEFAULT_DOWNLOAD_DIR = _default_download_dir()
 
-CONFIG_PATH = os.path.join(_app_dir(), "config.json")
+CONFIG_PATH = os.path.join(_config_dir(), "config.json")
 CLIPBOARD_TMP_DIR = os.path.join(tempfile.gettempdir(), "dccon_clipboard_tmp")
+
+_migrate_legacy_config()
 
 
 def load_config() -> dict:
@@ -463,9 +508,11 @@ class DcconAPI:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
-    def get_top5(self, kind: str):
-        """kind in {'day','week'}. JSONP 응답에서 배열만 추출."""
-        url = TOP5_URL.format(kind=kind)
+    def get_top(self, kind: str):
+        """kind in {'day','week','month'}. TOP100 JSONP 응답에서 배열만
+        추출한다(각 항목에 1~100의 rank 필드 포함). JSONP 파싱 로직은
+        예전 top5 API와 동일한 감싸기 형태라 그대로 재사용 가능."""
+        url = TOP_URL.format(kind=kind)
         r = self.session.get(url, timeout=15)
         r.raise_for_status()
         txt = r.text
@@ -489,22 +536,26 @@ class DcconAPI:
         items = self._parse_listbox(soup, ".dccon_listbox .div_package")
         return last_page, items
 
-    def search(self, keyword: str, page: int = 1, sort: str = "hot"):
+    def search(self, keyword: str, page: int = 1, sort: str = "hot", category: str = "title"):
         """검색. (검색결과수문자열, 페이지수, items)
 
         DCInside 검색은 키워드가 URL path segment 안에 들어가므로
         반드시 percent-encoding 해야 합니다. requests가 path를 자동으로
         인코딩하지 않으므로 quote()로 명시적으로 처리합니다.
+
+        category in {'title','nick_name','tags'} — 디시콘명/닉네임/태그
+        검색 대상. 실측 확인 결과 URL의 이 세그먼트만 바뀌면 나머지
+        구조(리다이렉트 판별, .search_num 파싱)는 동일하게 동작한다.
         """
         # encodeURIComponent 와 동등한 동작 (특수문자, 한글 모두 인코딩)
         encoded = quote(keyword, safe="")
-        url = f"{BASE}/{sort}/{page}/title/{encoded}"
+        url = f"{BASE}/{sort}/{page}/{category}/{encoded}"
         r = self.session.get(url, timeout=20)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # 서버가 /title/keyword 를 다른 경로로 리다이렉트했으면 검색 실패로 판단.
-        if "/title/" not in r.url:
+        # 서버가 /{category}/keyword 를 다른 경로로 리다이렉트했으면 검색 실패로 판단.
+        if f"/{category}/" not in r.url:
             return "(0건)", 0, []
 
         # 검색 결과 페이지에는 .search_num 이 존재합니다.
@@ -621,7 +672,7 @@ class DcconApp(tk.Tk):
         initial_dir = saved_dir if saved_dir and os.path.isdir(saved_dir) else DEFAULT_DOWNLOAD_DIR
         self.download_dir = tk.StringVar(value=initial_dir)
         self.mode = tk.StringVar(value="new")        # new | search | top | local
-        self.period = tk.StringVar(value="day")      # day | week (top용)
+        self.period = tk.StringVar(value="day")      # day | week | month (top용)
         self.page = 1
         self.last_page = 1
         self.last_search = ""
@@ -650,10 +701,12 @@ class DcconApp(tk.Tk):
         saved = self._config.get("last_mode") or {}
         mode = saved.get("mode")
         page = saved.get("page", 1) if isinstance(saved.get("page"), int) else 1
-        if mode == "top" and saved.get("period") in ("day", "week"):
+        if mode == "top" and saved.get("period") in ("day", "week", "month"):
             self.load_top(saved["period"])
         elif mode == "search" and saved.get("search_keyword"):
             self.search_var.set(saved["search_keyword"])
+            if saved.get("search_category") in SEARCH_CATEGORIES:
+                self.search_category_label.set(saved["search_category"])
             self.do_search(page=page)
         elif mode == "local":
             self.load_local(page)
@@ -709,6 +762,7 @@ class DcconApp(tk.Tk):
         states = {
             self.nav_day: mode == "top" and period == "day",
             self.nav_week: mode == "top" and period == "week",
+            self.nav_month: mode == "top" and period == "month",
             self.nav_new: mode == "new",
             self.nav_local: mode == "local",
         }
@@ -771,7 +825,10 @@ class DcconApp(tk.Tk):
         self.nav_day.pack(side="left")
         self.nav_week = tb.Button(top, text="주간 인기", bootstyle="secondary-outline",
                                   command=lambda: self.load_top("week"))
-        self.nav_week.pack(side="left", padx=(4, 12))
+        self.nav_week.pack(side="left", padx=(4, 0))
+        self.nav_month = tb.Button(top, text="월간 인기", bootstyle="secondary-outline",
+                                   command=lambda: self.load_top("month"))
+        self.nav_month.pack(side="left", padx=(4, 12))
         self.nav_new = tb.Button(top, text="NEW", bootstyle="secondary-outline",
                                  command=lambda: self.load_list("new", 1))
         self.nav_new.pack(side="left", padx=(0, 4))
@@ -795,6 +852,10 @@ class DcconApp(tk.Tk):
         self.prev_btn.pack(side="right")
 
         ttk.Label(top, text="검색:").pack(side="left")
+        self.search_category_label = tk.StringVar(value="디시콘명")
+        cat_combo = ttk.Combobox(top, textvariable=self.search_category_label, state="readonly",
+                                 width=7, values=list(SEARCH_CATEGORIES.keys()))
+        cat_combo.pack(side="left", padx=(4, 0))
         self.search_var = tk.StringVar()
         ent = ttk.Entry(top, textvariable=self.search_var, width=22)
         ent.pack(side="left", padx=4)
@@ -957,7 +1018,7 @@ class DcconApp(tk.Tk):
 
     def _fetch_top(self, period):
         try:
-            items = self.api.get_top5(period)
+            items = self.api.get_top(period)
             # JSON 응답은 thumb_img 대신 img, title, nick_name, package_idx 키일 수 있음
             normalized = []
             for it in items:
@@ -966,6 +1027,7 @@ class DcconApp(tk.Tk):
                     "img": it.get("img", ""),
                     "title": it.get("title", ""),
                     "nick_name": it.get("nick_name", ""),
+                    "rank": it.get("rank", ""),
                 })
             self._list_cache[("top", period)] = (time.time(), 1, normalized, False)
             self.after(0, self._show_items, normalized, False)
@@ -1006,17 +1068,19 @@ class DcconApp(tk.Tk):
         kw = self.search_var.get().strip()
         if not kw:
             return
+        category = SEARCH_CATEGORIES.get(self.search_category_label.get(), "title")
         self.mode.set("search"); self.last_search = kw; self.page = page
         self._sync_nav_active()
         self.set_status("검색 중...")
-        self._save_last_mode(mode="search", search_keyword=kw, page=page)
+        self._save_last_mode(mode="search", search_keyword=kw, page=page,
+                             search_category=self.search_category_label.get())
         # 썸네일 캐시는 유지 — 같은 콘을 다시 볼 때 즉시 표시 (재다운로드 방지)
         self.clear_grid()
-        threading.Thread(target=self._fetch_search, args=(kw, page), daemon=True).start()
+        threading.Thread(target=self._fetch_search, args=(kw, page, category), daemon=True).start()
 
-    def _fetch_search(self, kw, page):
+    def _fetch_search(self, kw, page, category="title"):
         try:
-            num_text, pages, items = self.api.search(kw, page)
+            num_text, pages, items = self.api.search(kw, page, category=category)
             self.last_page = max(pages, 1)
             self.page = page
             self.after(0, self.set_status, f"검색 결과 {num_text}")
@@ -1040,10 +1104,12 @@ class DcconApp(tk.Tk):
             self.load_list(mode, p)
         elif mode == "search":
             self.page = p
+            category = SEARCH_CATEGORIES.get(self.search_category_label.get(), "title")
             self.set_status(f'"{self.last_search}" {p}페이지 검색 중...')
-            self._save_last_mode(mode="search", search_keyword=self.last_search, page=p)
+            self._save_last_mode(mode="search", search_keyword=self.last_search, page=p,
+                                 search_category=self.search_category_label.get())
             self.clear_grid()
-            threading.Thread(target=self._fetch_search, args=(self.last_search, p), daemon=True).start()
+            threading.Thread(target=self._fetch_search, args=(self.last_search, p, category), daemon=True).start()
         elif mode == "local":
             self.load_local(p)
 
@@ -1186,6 +1252,14 @@ class DcconApp(tk.Tk):
         thumb = tk.Label(thumb_box, text="…", bg=COL_THUMB_BG, fg="#c4c4c4",
                          font=(FONT_FAMILY, 22))
         thumb.pack(expand=True)
+
+        # 인기 100위 목록(일간/주간/월간)에서만 rank 필드가 온다. 썸네일
+        # 좌상단에 순위 배지를 얹어 몇 위인지 바로 보이게 한다.
+        rank = item.get("rank")
+        if rank:
+            rank_badge = tk.Label(thumb_box, text=str(rank), bg=COL_ACCENT, fg="#ffffff",
+                                  font=(FONT_FAMILY, 8, "bold"), padx=5, pady=1)
+            rank_badge.place(x=2, y=2)
 
         title = tk.Label(inner, text=item["title"][:24], bg=COL_BG, fg="#222",
                          wraplength=THUMB_SIZE[0], justify="center",
