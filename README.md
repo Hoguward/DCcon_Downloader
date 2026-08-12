@@ -18,8 +18,8 @@
 
 1. [Releases](../../releases) 페이지에서 최신 `DCcon-Downloader.exe` 다운로드
 2. 더블클릭 실행 — 설치나 압축 해제 과정 없음
-3. Windows Defender/백신에서 경고가 뜰 수 있는데, PyInstaller로 빌드된 파이썬 실행 파일에서 흔한 오탐(false positive)입니다.
-4. [바이러스토탈 검사 결과](https://www.virustotal.com/gui/file/56f5da31b15c091034baa93f17d478b5d5f0d6bd7a84b785b8fc675e6fb4febf/detection)를 함께 남깁니다.(68건 중 3개 검출(오탐))
+3. Windows Defender/백신에서 경고가 뜰 수 있는데, PyInstaller로 빌드된 파이썬 실행 파일에서 흔한 오탐(false positive)입니다. (`Trojan:Win32/Wacatac.B!ml` 등 — 코드 내용이 아니라 "실행 파일이 스스로 압축을 풀고 구동"하는 PyInstaller onefile 패턴 자체를 의심하는 휴리스틱/ML 탐지)
+4. v2.0.0(PyWebView 기반) [바이러스토탈 검사 결과](https://www.virustotal.com/gui/file/d87ef06f5d96bdc2f2344bc6d08a636283fe6232b55eb4bc483633cb6df41ef6/detection)(71건 중 6개 검출, 전부 오탐) · v1.x(tkinter 기반) [검사 결과](https://www.virustotal.com/gui/file/56f5da31b15c091034baa93f17d478b5d5f0d6bd7a84b785b8fc675e6fb4febf/detection)(68건 중 3개 검출, 오탐)
 
 ### Python 직접 실행 (개발/커스터마이징 시)
 

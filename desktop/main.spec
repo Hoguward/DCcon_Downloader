@@ -67,7 +67,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX 압축은 실행 파일을 스스로 압축 해제하는 형태로 바꾸는데, 이
+    # 패턴 자체가 일부 백신의 휴리스틱/ML 탐지(Wacatac.B!ml 등)를
+    # 자극하는 것으로 알려져 있다 — 꺼서 오탐률을 낮춘다(실측 비교 예정).
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,           # GUI 앱이므로 콘솔 창 숨김
