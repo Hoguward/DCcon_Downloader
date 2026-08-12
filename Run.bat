@@ -1,6 +1,6 @@
 @echo off
-title DCcon Downloader (Python GUI)
-cd /d "%~dp0"
+title DCcon Downloader
+cd /d "%~dp0desktop"
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -13,20 +13,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python -c "import requests, bs4, PIL" 2>nul
+python -c "import requests, bs4, fastapi, uvicorn, webview, win32clipboard" 2>nul
 if errorlevel 1 (
     echo Installing required packages... ^(first time only^)
     python -m pip install --quiet --upgrade pip
-    python -m pip install --quiet requests beautifulsoup4 pillow
+    python -m pip install --quiet -r requirements.txt
     if errorlevel 1 (
         echo.
         echo [Error] Package installation failed.
-        echo Run manually:  pip install requests beautifulsoup4 pillow
+        echo Run manually:  pip install -r requirements.txt
         echo.
         pause
         exit /b 1
     )
 )
 
-python "%~dp0dccon_gui.py"
+python main.py
 if errorlevel 1 pause

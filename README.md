@@ -24,8 +24,8 @@
 ### Python 직접 실행 (개발/커스터마이징 시)
 
 1. [Python 3.10+](https://www.python.org/downloads/) 설치 (설치 시 **"Add Python to PATH" 체크 필수**)
-2. `dccon_gui.py` 더블클릭
-3. 최초 실행 시 필요한 패키지(`requests`, `beautifulsoup4`, `pillow`, `ttkbootstrap`, `pywin32`)가 없으면 안내가 뜹니다. `pip install requests beautifulsoup4 pillow ttkbootstrap pywin32` 후 다시 실행하세요.
+2. `Run.bat` 더블클릭 (내부적으로 `desktop/main.py`를 실행)
+3. 최초 실행 시 필요한 패키지(`requests`, `beautifulsoup4`, `fastapi`, `uvicorn`, `pywebview`, `pywin32`)가 없으면 안내가 뜹니다. `pip install -r desktop/requirements.txt` 후 다시 실행하세요.
 
 ---
 
@@ -76,6 +76,30 @@
 
 ---
 
+## 프로젝트 구조
+
+이 저장소는 **같은 파싱/다운로드 로직**을 데스크톱 앱과 웹 버전 두 형태로 배포합니다.
+
+```
+desktop/                  데스크톱 앱 (PyWebView 기반, 이 저장소의 메인 배포물)
+├── main.py                진입점 — 로컬 API 서버(uvicorn)를 백그라운드로 띄우고 창을 표시
+├── desktop.py              설정 저장/클립보드 복사/폴더 열기 등 OS 연동 기능
+├── main.spec               PyInstaller 빌드 설정
+├── api/                    디시인사이드 파싱 로직 + 로컬 API 라우트
+└── public/                 프론트엔드 (HTML/JS)
+
+web/                       웹 버전 (GitHub Pages + Vercel로 별도 배포, 브라우저에서 바로 사용)
+├── api/                    Vercel 서버리스 함수로 배포되는 프록시
+└── public/                 프론트엔드
+```
+
+데스크톱 앱은 과거 tkinter로 만들었으나, 대량 항목 렌더링 시 응답 없음·GDI 리소스 누적 크래시
+등 tkinter 자체의 구조적 한계로 인한 문제가 반복되어 **PyWebView(웹뷰 기반 데스크톱 프레임워크)
+로 재작성**했습니다. 화면(HTML/JS)은 브라우저 렌더링 엔진이 그대로 처리하므로 대량 카드
+그리드·이미지 갤러리에서 훨씬 안정적입니다.
+
+---
+
 ## 기본 저장 폴더 결정 규칙
 
 1. 프로그램이 있는 폴더의 **상위 폴더에 `dccon_downloaded/`가 이미 존재**하면 그곳을 사용 (원본 DCcon-Downloader 사용자의 기존 컬렉션과 자동 합쳐짐)
@@ -92,10 +116,10 @@ PyInstaller로 빌드된 .exe에서도 정상 동작하도록 `sys.frozen` 체�
 | --- | --- |
 | `requests` | HTTP 요청 |
 | `beautifulsoup4` | 디시콘 페이지 HTML 파싱 |
-| `pillow` | 썸네일/미리보기 이미지 렌더링 |
-| `ttkbootstrap` | 현대적 테마·색상 (DCinside 계열 블루) |
+| `fastapi` + `uvicorn` | 로컬 API 서버 (디시인사이드 파싱/다운로드/내 보관함) |
+| `pywebview` | 데스크톱 창 (Windows에서는 WebView2/Edge Chromium 엔진 사용) |
 | `pywin32` | 우클릭 → 클립보드 복사 (Windows CF_DIB/CF_HDROP) |
-| `tkinter` | GUI (Python 표준 라이브러리) |
+| `pillow` | 클립보드 복사 시 이미지 포맷 변환 |
 
 ---
 
@@ -107,7 +131,7 @@ Releases에 올라온 exe를 신뢰하기 어렵거나, 소스를 수정해서 �
 Build-exe.bat
 ```
 
-더블클릭하면 필요한 패키지(`pyinstaller` 포함)를 자동 설치하고 `dccon_gui.spec` 설정으로 빌드해 `dist\DCcon-Downloader.exe`를 생성합니다. 소스를 직접 읽고 눈으로 확인한 뒤 스스로 빌드하는 것이 실행 파일의 안전성을 가장 확실하게 검증하는 방법입니다.
+더블클릭하면 필요한 패키지(`pyinstaller` 포함)를 자동 설치하고 `desktop/main.spec` 설정으로 빌드해 `desktop\dist\DCcon-Downloader.exe`를 생성합니다. 소스를 직접 읽고 눈으로 확인한 뒤 스스로 빌드하는 것이 실행 파일의 안전성을 가장 확실하게 검증하는 방법입니다.
 
 ---
 

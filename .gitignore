@@ -8,7 +8,7 @@ venv/
 env/
 .pytest_cache/
 
-# PyInstaller build artifacts
+# PyInstaller build artifacts (desktop/build/, desktop/dist/ 도 재귀 적용됨)
 build/
 dist/
 *.spec.bak

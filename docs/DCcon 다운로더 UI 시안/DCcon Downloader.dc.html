@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#20242c;font-family:'Noto Sans KR',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#1e5fdb;text-decoration:none}a:hover{color:#174ab0}
+*{box-sizing:border-box}
+#app{--bg:#f5f6f8;--surface:#ffffff;--text:#1a1f29;--muted:#6f7a89;--line:#e4e7ed;--accent:#1e5fdb;--accent-soft:#e9f0fd;--chrome:#edeff3;--thumb:#e7eaf0;--shadow:0 1px 2px rgba(20,26,38,.06),0 6px 20px rgba(20,26,38,.05);--card-min:180px}
+#app[data-theme="dark"]{--bg:#14181f;--surface:#1b212b;--text:#e7ebf1;--muted:#8b97a7;--line:#28303c;--accent:#6ba8f5;--accent-soft:#1d2937;--chrome:#0f131a;--thumb:#232b36;--shadow:0 1px 2px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.25)}
+#app[data-cols="4"]{--card-min:232px}
+#app[data-cols="6"]{--card-min:150px}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,14px)}to{opacity:1;transform:translate(-50%,0)}}
+@keyframes menuIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+</style>
+</helmet>
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+<div id="app" data-theme="{{ theme }}" data-cols="{{ cols }}" onContextMenu="{{ onRootMenu }}" onClick="{{ closeMenu }}" style="width:1100px;height:720px;flex:none;position:relative;display:flex;flex-direction:column;overflow:hidden;border-radius:10px;background:var(--bg);color:var(--text);box-shadow:0 24px 60px rgba(0,0,0,.35);font-size:13px">
+
+  <div style="height:38px;flex:none;display:flex;align-items:center;gap:10px;padding:0 0 0 14px;background:var(--chrome);border-bottom:1px solid var(--line);-webkit-user-select:none">
+    <div style="width:14px;height:14px;border-radius:4px;background:var(--accent)"></div>
+    <div style="font-size:12px;font-weight:700;letter-spacing:-.01em">DCcon Downloader</div>
+    <div style="font-size:11px;color:var(--muted)">v1.2.0</div>
+    <div style="flex:1"></div>
+    <div onClick="{{ toggleTheme }}" style="cursor:pointer;font-size:11px;color:var(--muted);padding:4px 10px;border-radius:6px;border:1px solid var(--line);margin-right:8px" style-hover="background:var(--surface);color:var(--text)">{{ themeLabel }}</div>
+    <div style="display:flex;height:38px">
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;cursor:default;color:var(--muted)" style-hover="background:rgba(125,135,150,.16)">
+        <div style="width:10px;height:1px;background:currentColor"></div>
+      </div>
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;cursor:default;color:var(--muted)" style-hover="background:rgba(125,135,150,.16)">
+        <div style="width:9px;height:9px;border:1px solid currentColor;border-radius:1px"></div>
+      </div>
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;cursor:default;color:var(--muted);font-size:13px" style-hover="background:#e5484d;color:#fff">✕</div>
+    </div>
+  </div>
+
+  <div style="flex:none;padding:14px 20px 0;display:flex;align-items:center;gap:12px">
+    <div style="display:flex;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:3px">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4">
+        <div onClick="{{ t.select }}" style="{{ t.style }}">{{ t.label }}</div>
+      </sc-for>
+    </div>
+    <div style="flex:1"></div>
+    <div style="position:relative;display:flex;align-items:center;width:320px;height:34px;background:var(--surface);border:1px solid var(--line);border-radius:9px" style-focus="border-color:var(--accent)">
+      <div onClick="{{ toggleScope }}" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 10px 0 12px;cursor:pointer;font-size:12px;color:var(--muted);border-right:1px solid var(--line);white-space:nowrap;flex:none" style-hover="color:var(--text)">
+        {{ scope }}
+        <span style="width:5px;height:5px;border-right:1.4px solid currentColor;border-bottom:1.4px solid currentColor;transform:rotate(45deg) translate(-1px,-1px)"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex:1;padding:0 12px">
+        <div style="width:11px;height:11px;border:1.6px solid var(--muted);border-radius:50%;flex:none"></div>
+        <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="{{ searchPlaceholder }}" style="flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font-family:inherit;font-size:12.5px">
+      </div>
+      <sc-if value="{{ scopeOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;left:0;top:40px;min-width:132px;padding:4px 0 5px;background:var(--surface);border:1px solid var(--line);border-radius:9px;box-shadow:0 10px 34px rgba(15,20,30,.22);z-index:30;animation:menuIn .1s ease-out">
+          <sc-for list="{{ scopes }}" as="sc" hint-placeholder-count="3">
+            <div onClick="{{ sc.select }}" style="{{ sc.style }}">{{ sc.label }}</div>
+          </sc-for>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+
+  <div style="flex:none;margin:12px 20px 0;display:flex;align-items:center;gap:10px;height:38px;padding:0 8px 0 12px;background:var(--surface);border:1px solid var(--line);border-radius:9px">
+    <div style="width:14px;height:11px;border:1.5px solid var(--muted);border-radius:2px;border-top-width:4px;flex:none"></div>
+    <div style="font-size:11px;color:var(--muted);flex:none">저장 폴더</div>
+    <div style="font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">{{ folder }}</div>
+    <div onClick="{{ openFolder }}" style="flex:none;font-size:11.5px;color:var(--muted);padding:6px 10px;border-radius:7px;cursor:pointer" style-hover="background:var(--bg);color:var(--text)">열기</div>
+    <div onClick="{{ changeFolder }}" style="flex:none;font-size:11.5px;font-weight:500;color:var(--accent);background:var(--accent-soft);padding:6px 12px;border-radius:7px;cursor:pointer" style-hover="filter:brightness(.96)">변경</div>
+  </div>
+
+  <sc-if value="{{ isGrid }}" hint-placeholder-val="{{ true }}">
+  <div style="flex:1;overflow:auto;padding:16px 20px 24px">
+    <div style="display:flex;align-items:baseline;gap:8px;margin:0 0 12px">
+      <div style="font-size:13px;font-weight:700">{{ listTitle }}</div>
+      <div style="font-size:11px;color:var(--muted)">{{ listCount }}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--card-min),1fr));gap:14px">
+      <sc-for list="{{ items }}" as="it" hint-placeholder-count="12">
+        <div onClick="{{ it.open }}" style="background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;cursor:pointer;box-shadow:var(--shadow);transition:transform .12s ease,border-color .12s ease" style-hover="transform:translateY(-2px);border-color:var(--accent)">
+          <div onContextMenu="{{ it.menu }}" style="position:relative;height:118px;background:repeating-linear-gradient(135deg,var(--thumb),var(--thumb) 7px,transparent 7px,transparent 14px);display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--line)">
+            <span style="font:10px ui-monospace,Menlo,monospace;color:var(--muted);background:var(--surface);padding:3px 7px;border-radius:5px;border:1px solid var(--line)">{{ it.slug }}</span>
+            <span style="position:absolute;right:7px;bottom:7px;font-size:10px;color:var(--muted);background:var(--surface);border:1px solid var(--line);padding:2px 6px;border-radius:20px">{{ it.count }}</span>
+          </div>
+          <div style="padding:9px 11px 11px;display:flex;flex-direction:column;gap:3px">
+            <div style="font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ it.title }}</div>
+            <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ it.author }}</div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;overflow:auto;padding:16px 20px 24px">
+    <div style="display:flex;align-items:center;gap:12px;margin:0 0 14px">
+      <div onClick="{{ back }}" style="font-size:11.5px;color:var(--muted);border:1px solid var(--line);background:var(--surface);padding:6px 11px;border-radius:7px;cursor:pointer" style-hover="color:var(--text)">← 목록</div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <div style="font-size:14px;font-weight:700">{{ detailTitle }}</div>
+        <div style="font-size:11px;color:var(--muted)">{{ detailMeta }}</div>
+      </div>
+      <div style="flex:1"></div>
+      <div onClick="{{ downloadAll }}" style="font-size:12px;font-weight:500;color:#fff;background:var(--accent);padding:9px 16px;border-radius:8px;cursor:pointer" style-hover="filter:brightness(1.06)">전체 다운로드</div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin:0 0 10px">이미지를 우클릭하면 개별 다운로드 · 클립보드 복사를 할 수 있습니다.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px">
+      <sc-for list="{{ frames }}" as="f" hint-placeholder-count="18">
+        <div onContextMenu="{{ f.menu }}" style="aspect-ratio:1;background:var(--surface);border:1px solid var(--line);border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:default;background-image:repeating-linear-gradient(135deg,var(--thumb),var(--thumb) 7px,transparent 7px,transparent 14px)" style-hover="border-color:var(--accent)">
+          <span style="font:10px ui-monospace,Menlo,monospace;color:var(--muted);background:var(--surface);padding:2px 6px;border-radius:5px;border:1px solid var(--line)">{{ f.label }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <div style="flex:none;height:26px;display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--chrome);border-top:1px solid var(--line);font-size:11px;color:var(--muted)">
+    <span>{{ status }}</span>
+    <div style="flex:1"></div>
+    <span>{{ folderShort }}</span>
+  </div>
+
+  <sc-if value="{{ menuOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ menuStyle }}">
+      <div style="padding:7px 12px 5px;font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px">{{ menuTarget }}</div>
+      <div onClick="{{ menuDownload }}" style="display:flex;align-items:center;gap:9px;padding:8px 14px 8px 12px;cursor:pointer;white-space:nowrap;font-size:12.5px" style-hover="background:var(--accent-soft);color:var(--accent)">
+        <span style="width:12px;height:12px;border-bottom:1.6px solid currentColor;border-right:1.6px solid currentColor;transform:rotate(45deg) translate(-2px,-1px);flex:none"></span>다운로드
+      </div>
+      <div onClick="{{ menuCopy }}" style="display:flex;align-items:center;gap:9px;padding:8px 14px 8px 12px;cursor:pointer;white-space:nowrap;font-size:12.5px" style-hover="background:var(--accent-soft);color:var(--accent)">
+        <span style="width:9px;height:11px;border:1.5px solid currentColor;border-radius:2px;box-shadow:2px -2px 0 -.5px var(--surface),3px -3px 0 -1px currentColor;flex:none;margin-left:2px"></span>클립보드로 복사
+      </div>
+      <div style="height:1px;background:var(--line);margin:4px 0"></div>
+      <div onClick="{{ menuCopyLink }}" style="padding:8px 14px 8px 33px;cursor:pointer;white-space:nowrap;font-size:12.5px;color:var(--muted)" style-hover="background:var(--accent-soft);color:var(--accent)">이미지 주소 복사</div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ toastOpen }}" hint-placeholder-val="{{ true }}">
+    <div style="position:absolute;left:50%;bottom:46px;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:11px 12px 11px 16px;background:var(--surface);border:1px solid var(--line);border-radius:11px;box-shadow:0 8px 30px rgba(15,20,30,.18);animation:toastIn .18s ease-out">
+      <div style="width:18px;height:18px;border-radius:50%;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;flex:none">
+        <span style="width:8px;height:4px;border-left:1.8px solid var(--accent);border-bottom:1.8px solid var(--accent);transform:rotate(-45deg) translate(0,-1px)"></span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <div style="font-size:12.5px;font-weight:500">{{ toastTitle }}</div>
+        <div style="font:10.5px ui-monospace,Menlo,monospace;color:var(--muted)">{{ folderShort }}</div>
+      </div>
+      <div onClick="{{ openFolder }}" style="font-size:12px;font-weight:500;color:var(--accent);background:var(--accent-soft);padding:7px 13px;border-radius:8px;cursor:pointer" style-hover="filter:brightness(.96)">폴더 열기</div>
+      <div onClick="{{ hideToast }}" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:7px;color:var(--muted);cursor:pointer;font-size:12px" style-hover="background:var(--bg)">✕</div>
+    </div>
+  </sc-if>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1160,&quot;height&quot;:780},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;cols&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;4&quot;,&quot;5&quot;,&quot;6&quot;],&quot;default&quot;:&quot;5&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;레이아웃&quot;},&quot;showAuthor&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;레이아웃&quot;}}">
+const PKGS = [
+  ["감자도리 시즌2","포테이토맨",24,"동물,감자,시즌"],["뚱냥이 일상편","냥집사",30,"고양이,일상,동물"],["직장인의 하루","월급루팡",18,"직장,일상,공감"],
+  ["오버액션 토끼","래빗홀",36,"토끼,리액션,동물"],["힘내라 개구리","프로그옹",22,"개구리,응원,동물"],["무표정 곰","곰돌e",28,"곰,무표정,동물"],
+  ["새벽감성 펭귄","남극러버",20,"펭귄,감성,동물"],["과몰입 햄스터","햄찌",32,"햄스터,리액션,동물"],["운동하는 문어","옥토",16,"운동,문어,헬스"],
+  ["멍뭉이 리액션","도그마스터",40,"강아지,리액션,동물"],["칼퇴근 고양이","6시퇴근",26,"고양이,직장,공감"],["극혐 표정 모음","익명의겔러",34,"표정,리액션,합성"],
+  ["여름한정 수박","수박바",12,"여름,음식,시즌"],["레트로 픽셀콘","도트장인",44,"픽셀,레트로,합성"],["말풍선 대사팩","텍스트왕",25,"텍스트,말풍선,공감"]
+];
+const SCOPES = ["아이콘명","제작자","태그"];
+const TABS = ["일간 인기","주간 인기","월간 인기","NEW"];
+
+class Component extends DCLogic {
+  state = {
+    theme: null, tab: "일간 인기", query: "", view: "grid", sel: 0,
+    scope: "아이콘명", scopeOpen: false,
+    menu: null, toast: { title: "감자도리 시즌2 · 24개 저장 완료" },
+    folder: "C:\\Users\\hyeon\\Downloads\\DCcon"
+  };
+
+  theme() { return this.state.theme ?? this.props.theme ?? "light"; }
+
+  showToast(title) {
+    clearTimeout(this._t);
+    this.setState({ toast: { title } });
+    this._t = setTimeout(() => this.setState({ toast: null }), 6000);
+  }
+
+  renderVals() {
+    const s = this.state, theme = this.theme();
+    const showAuthor = this.props.showAuthor ?? true;
+    const q = s.query.trim();
+    const field = { "아이콘명": 0, "제작자": 1, "태그": 3 }[s.scope];
+    const list = PKGS.filter(p => !q || String(p[field]).includes(q));
+    const sel = PKGS[s.sel];
+
+    const tabStyle = on => `padding:7px 14px;border-radius:7px;font-size:12.5px;cursor:pointer;white-space:nowrap;font-weight:${on?500:400};color:${on?"#fff":"var(--muted)"};background:${on?"var(--accent)":"transparent"}`;
+
+    return {
+      theme, cols: String(this.props.cols ?? 5),
+      themeLabel: theme === "dark" ? "라이트 모드" : "다크 모드",
+      toggleTheme: e => { e.stopPropagation(); this.setState({ theme: theme === "dark" ? "light" : "dark" }); },
+      tabs: TABS.map(label => ({
+        label, style: tabStyle(label === s.tab),
+        select: () => this.setState({ tab: label, view: "grid" })
+      })),
+      query: s.query,
+      onQuery: e => this.setState({ query: e.target.value }),
+      scope: s.scope, scopeOpen: s.scopeOpen,
+      searchPlaceholder: { "아이콘명": "디시콘 이름으로 검색", "제작자": "제작자 이름으로 검색", "태그": "태그로 검색 (예: 동물)" }[s.scope],
+      toggleScope: e => { e.stopPropagation(); this.setState({ scopeOpen: !s.scopeOpen, menu: null }); },
+      scopes: SCOPES.map(label => ({
+        label,
+        style: `padding:7px 14px;font-size:12.5px;cursor:pointer;white-space:nowrap;color:${label === s.scope ? "var(--accent)" : "var(--text)"};font-weight:${label === s.scope ? 500 : 400}`,
+        select: e => { e.stopPropagation(); this.setState({ scope: label, scopeOpen: false }); }
+      })),
+      folder: s.folder,
+      folderShort: s.folder,
+      changeFolder: e => { e.stopPropagation(); this.showToast("저장 폴더가 변경되었습니다"); },
+      openFolder: e => { e.stopPropagation(); this.showToast("탐색기에서 폴더를 열었습니다"); },
+      isGrid: s.view === "grid", isDetail: s.view === "detail",
+      listTitle: q ? `${s.scope} "${q}" 검색 결과` : s.tab,
+      listCount: `${list.length}개`,
+      items: list.map((p, i) => ({
+        title: p[0], author: showAuthor ? p[1] : "", count: `${p[2]}개`,
+        slug: `thumb_${String(i + 1).padStart(3, "0")}.png`,
+        open: () => this.setState({ view: "detail", sel: PKGS.indexOf(p) }),
+        menu: e => { e.preventDefault(); e.stopPropagation();
+          const r = e.currentTarget.closest("#app").getBoundingClientRect();
+          this.setState({ menu: { x: Math.min(e.clientX - r.left, 1100 - 200), y: Math.min(e.clientY - r.top, 720 - 170), name: p[0] } }); }
+      })),
+      detailTitle: sel[0],
+      detailMeta: `${sel[1]} · 이미지 ${sel[2]}개 · PNG/GIF`,
+      downloadAll: e => { e.stopPropagation(); this.showToast(`${sel[0]} · ${sel[2]}개 저장 완료`); },
+      back: () => this.setState({ view: "grid" }),
+      frames: Array.from({ length: sel[2] }, (_, i) => {
+        const label = `${String(i + 1).padStart(2, "0")}.png`;
+        return { label, menu: e => { e.preventDefault(); e.stopPropagation();
+          const r = e.currentTarget.closest("#app").getBoundingClientRect();
+          this.setState({ menu: { x: Math.min(e.clientX - r.left, 1100 - 200), y: Math.min(e.clientY - r.top, 720 - 170), name: `${sel[0]} / ${label}` } }); } };
+      }),
+      status: s.view === "detail" ? `${sel[0]} 미리보기` : `${list.length}개 패키지 · 마지막 갱신 12:04`,
+      menuOpen: !!s.menu,
+      menuTarget: s.menu ? s.menu.name : "",
+      menuStyle: s.menu ? `position:absolute;left:${s.menu.x}px;top:${s.menu.y}px;min-width:178px;padding:4px 0 5px;background:var(--surface);border:1px solid var(--line);border-radius:9px;box-shadow:0 10px 34px rgba(15,20,30,.22);z-index:20;animation:menuIn .1s ease-out;transform-origin:top left` : "",
+      menuDownload: () => { const n = s.menu.name; this.setState({ menu: null }); this.showToast(`${n} 저장 완료`); },
+      menuCopy: () => { const n = s.menu.name; this.setState({ menu: null }); this.showToast(`${n} 이미지를 클립보드에 복사했습니다`); },
+      menuCopyLink: () => { this.setState({ menu: null }); this.showToast("이미지 주소를 클립보드에 복사했습니다"); },
+      closeMenu: () => { if (s.menu || s.scopeOpen) this.setState({ menu: null, scopeOpen: false }); },
+      onRootMenu: e => e.preventDefault(),
+      toastOpen: !!s.toast,
+      toastTitle: s.toast ? s.toast.title : "",
+      hideToast: e => { e.stopPropagation(); this.setState({ toast: null }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

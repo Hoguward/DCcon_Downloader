@@ -1,6 +1,6 @@
 @echo off
 title Build DCcon-Downloader.exe
-cd /d "%~dp0"
+cd /d "%~dp0desktop"
 
 echo ===================================================
 echo  Building DCcon-Downloader.exe with PyInstaller
@@ -16,11 +16,11 @@ if errorlevel 1 (
 )
 
 echo [1/3] Checking dependencies...
-python -c "import requests, bs4, PIL, ttkbootstrap, win32clipboard" 2>nul
+python -c "import requests, bs4, fastapi, uvicorn, webview, win32clipboard" 2>nul
 if errorlevel 1 (
     echo Installing runtime dependencies...
     python -m pip install --quiet --upgrade pip
-    python -m pip install --quiet requests beautifulsoup4 pillow ttkbootstrap pywin32
+    python -m pip install --quiet -r requirements.txt
 )
 
 python -c "import PyInstaller" 2>nul
@@ -40,7 +40,7 @@ if exist dist rmdir /s /q dist
 if exist __pycache__ rmdir /s /q __pycache__
 
 echo [3/3] Building... ^(this may take 1-3 minutes^)
-python -m PyInstaller dccon_gui.spec --noconfirm
+python -m PyInstaller main.spec --noconfirm
 if errorlevel 1 (
     echo.
     echo [Error] Build failed. See messages above.
@@ -51,7 +51,7 @@ if errorlevel 1 (
 echo.
 echo ===================================================
 echo  Done! The .exe is at:
-echo    %~dp0dist\DCcon-Downloader.exe
+echo    %~dp0desktop\dist\DCcon-Downloader.exe
 echo ===================================================
 echo.
 
