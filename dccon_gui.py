@@ -154,8 +154,20 @@ def bind_mousewheel(canvas: tk.Canvas):
     있었다. 대신 canvas마다 root에 전역으로 휠 이벤트를 걸어두되, 이벤트가
     들어올 때마다 event.widget에서 부모를 타고 올라가며 "지금 이 캔버스에
     속한 위젯 위에서 발생했는지"를 판별해, 맞을 때만 그 캔버스를 스크롤한다.
+
+    스크롤 중에는 canvas._scrolling 플래그를 켜 둔다. 카드가 많을 때(인기
+    100위 등) 휠을 굴리면 포인터 아래로 카드 수십 개가 빠르게 스쳐 지나가며
+    각 카드의 <Enter>/<Leave> 핸들러(_make_card)가 매 프레임 위젯
+    configure를 반복 호출해 메인 스레드가 밀리는 현상이 있었다 — 카드
+    쪽에서 이 플래그를 보고 스크롤 중에는 hover 재계산을 건너뛴다.
     """
     alive = {"value": True}
+    canvas._scrolling = False
+    stop_job = {"id": None}
+
+    def _mark_scroll_end():
+        if alive["value"]:
+            canvas._scrolling = False
 
     def _on_wheel(e):
         if not alive["value"]:
@@ -167,6 +179,10 @@ def bind_mousewheel(canvas: tk.Canvas):
                 # 카드가 아래로 밀려나 빈 공간이 생기는 버그가 있었다.
                 bbox = canvas.bbox("all")
                 if bbox and (bbox[3] - bbox[1]) > canvas.winfo_height():
+                    canvas._scrolling = True
+                    if stop_job["id"] is not None:
+                        canvas.after_cancel(stop_job["id"])
+                    stop_job["id"] = canvas.after(150, _mark_scroll_end)
                     canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
                 return
             widget = getattr(widget, "master", None)
@@ -661,6 +677,12 @@ class DcconApp(tk.Tk):
         self.executor = ThreadPoolExecutor(max_workers=THUMB_WORKERS)
         self.current_items = []
         self._show_pager = True
+        # 화면 전환(_show_items 호출)마다 1씩 증가. 이전 화면에서 큐잉된
+        # load_thumb 워커가 완료 시점에 이 값과 자기 세대를 비교해 다르면
+        # 조용히 버린다 — 화면을 떠나도 executor에 남아있던 작업이 그대로
+        # 실행되며 새 화면의 썸네일 로딩 뒤로 밀려 늦게(또는 안) 뜨던 문제,
+        # 그리고 이미 사라진 위젯을 향한 불필요한 콜백을 함께 없앤다.
+        self._render_gen = 0
         self.thumb_refs = {}      # 카드 썸네일 ImageTk 참조 보관
         self.preview_refs = []    # 상세창 이미지 참조 보관
         # 일간/주간 인기·NEW 목록 결과 캐시. 키: ("top", period) 또는
@@ -889,7 +911,20 @@ class DcconApp(tk.Tk):
         self.canvas_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor="n")
         self.grid_frame.bind("<Configure>", lambda e: self._on_grid_configure())
         self.grid_cols = GRID_COLS
+
+        # 내 보관함(local) 전용 가상 스크롤 컨테이너. 다운로드가 수백~수천
+        # 개일 수 있어 다른 화면(페이지네이션)과 달리 전체를 한 번에 카드로
+        # 만들지 않고, 뷰포트에 보이는 카드만 이 프레임 위에 place()로
+        # 배치한다. 기본은 숨겨두고 local 모드 진입 시에만 canvas_window를
+        # 이쪽으로 바꿔 보여준다.
+        self.local_frame = tk.Frame(self.canvas, bg=COL_BG)
+        self.local_live_cards = {}   # index -> card widget
+        self.local_all_items = []
+        self.local_cols = GRID_COLS
+        self._local_scroll_job = None
+
         self.canvas.bind("<Configure>", self._on_canvas_resize)
+        self.canvas.configure(yscrollcommand=self._on_canvas_yscroll)
         bind_mousewheel(self.canvas)
 
         # 상태바
@@ -897,6 +932,10 @@ class DcconApp(tk.Tk):
         ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(10, 4)).pack(side="bottom", fill="x")
 
     def _on_canvas_resize(self, event):
+        if self.mode.get() == "local":
+            new_cols = calc_cols(event.width, CARD_WIDTH, min_cols=1)
+            self._recalc_local_layout(new_cols if new_cols != self.local_cols else None)
+            return
         # 그리드를 캔버스 가로 중앙으로 이동 (그리드 폭은 콘텐츠에 맞게 자연 크기 유지).
         self.canvas.coords(self.canvas_window, event.width / 2, 0)
         new_cols = calc_cols(event.width, CARD_WIDTH, min_cols=1)
@@ -908,6 +947,11 @@ class DcconApp(tk.Tk):
     def _on_grid_configure(self):
         update_scrollregion(self.canvas)
         self._sync_scrollbar()
+
+    def _on_canvas_yscroll(self, *args):
+        self.vbar.set(*args)
+        if self.mode.get() == "local":
+            self._schedule_local_virtualize()
 
     def _sync_scrollbar(self):
         """콘텐츠가 뷰포트보다 길 때만 세로 스크롤바를 표시.
@@ -973,6 +1017,14 @@ class DcconApp(tk.Tk):
 
     # ---------- 목록 로딩 ----------
     def clear_grid(self, reset_scroll: bool = True):
+        # local(내 보관함) 화면을 떠날 때는 가상 스크롤 카드/컨테이너도
+        # 함께 정리하고, 캔버스가 다시 grid_frame(일반 페이지네이션 화면)을
+        # 보여주도록 되돌린다.
+        if self.canvas.itemcget(self.canvas_window, "window") == str(self.local_frame):
+            for w in self.local_live_cards.values():
+                w.destroy()
+            self.local_live_cards.clear()
+            self.canvas.itemconfigure(self.canvas_window, window=self.grid_frame)
         for w in self.grid_frame.winfo_children():
             w.destroy()
         if reset_scroll:
@@ -1115,24 +1167,26 @@ class DcconApp(tk.Tk):
 
     # ---------- 내 보관함 (로컬 목록) ----------
     def load_local(self, page: int = 1):
-        """서버 호출 없이 저장 폴더를 스캔해 로컬에 저장된 디시콘 목록을 표시."""
-        self.mode.set("local"); self.page = page
+        """서버 호출 없이 저장 폴더를 스캔해 로컬에 저장된 디시콘 목록을 표시.
+
+        페이지 구분 없이 가나다순 전체를 무한 스크롤로 보여준다. 다운로드가
+        수백~수천 개(v1.1.5에서 다뤘던 대량 저장 시나리오)일 수 있어, 전체를
+        한 번에 카드로 만들지 않고 상세페이지 미리보기 그리드와 같은 방식의
+        가상 스크롤(_virtualize_local_grid)로 뷰포트에 보이는 카드만 만든다.
+        page 인자는 호출부(F5 새로고침, 저장된 마지막 화면 복원 등) 호환을
+        위해 남겨두지만 더 이상 쓰지 않는다 — 항상 전체를 스크롤로 보여준다.
+        """
+        self.mode.set("local"); self.page = 1; self.last_page = 1
         self._sync_nav_active()
         self.set_status("저장 폴더 스캔 중...")
-        self._save_last_mode(mode="local", page=page)
+        self._save_last_mode(mode="local", page=1)
         self.clear_grid()
-        threading.Thread(target=self._fetch_local, args=(page,), daemon=True).start()
+        threading.Thread(target=self._fetch_local, daemon=True).start()
 
-    def _fetch_local(self, page):
+    def _fetch_local(self):
         try:
             all_items = _scan_local_packages(self.download_dir.get())
-            per_page = 15
-            self.last_page = max(1, (len(all_items) + per_page - 1) // per_page)
-            page = max(1, min(page, self.last_page))
-            self.page = page
-            start = (page - 1) * per_page
-            page_items = all_items[start:start + per_page]
-            self.after(0, self._show_items, page_items, True)
+            self.after(0, self._show_local_items, all_items)
         except Exception as e:
             self.after(0, self.set_status, f"실패: {e}")
 
@@ -1140,6 +1194,8 @@ class DcconApp(tk.Tk):
     def _show_items(self, items, show_pager, keep_scroll=False):
         self.current_items = items
         self._show_pager = show_pager
+        self._render_gen += 1
+        gen = self._render_gen
         self.update_nav(show_pager)
         self.clear_grid(reset_scroll=False)
         if not items:
@@ -1155,7 +1211,7 @@ class DcconApp(tk.Tk):
         cards = []
         for i, it in enumerate(items):
             r, c = divmod(i, self.grid_cols)
-            card = self._make_card(self.grid_frame, it, frozenset())
+            card = self._make_card(self.grid_frame, it, frozenset(), gen)
             card.grid(row=r, column=c, padx=8, pady=8, sticky="n")
             cards.append(card)
         if self.mode.get() != "local":
@@ -1189,6 +1245,93 @@ class DcconApp(tk.Tk):
         for card in cards:
             if card.winfo_exists():
                 card.refresh_highlight(local_titles)
+
+    # ---------- 내 보관함 가상 스크롤 ----------
+    # 카드 1개가 차지하는 대략적인 높이(px). CARD_WIDTH와 마찬가지로 열 수/
+    # 행 수 계산용 근사치 — _make_card 실측(폭168 x 높이216) 기준에 grid의
+    # padx/pady(각 8px)를 더했다.
+    LOCAL_CARD_H = 216 + 16
+
+    def _show_local_items(self, items):
+        self.current_items = items
+        self.local_all_items = items
+        self._show_pager = False
+        self.update_nav(False)
+        self.canvas.itemconfigure(self.canvas_window, window=self.local_frame)
+        if not items:
+            self.set_status("보관된 디시콘이 없습니다")
+            for w in self.local_live_cards.values():
+                w.destroy()
+            self.local_live_cards.clear()
+            self.local_frame.configure(width=1, height=1)
+            self.canvas.configure(scrollregion=(0, 0, 1, 1))
+            return
+        self.canvas.yview_moveto(0)
+        self._recalc_local_layout()
+        self.set_status(f"{len(items)}개 표시")
+        if not self._did_initial_fit:
+            self.after_idle(self._fit_window_to_content)
+
+    def _recalc_local_layout(self, cols: int = None):
+        """전체 스크롤 영역(행 수 * 카드 높이)만 다시 계산 — 실제 카드
+        생성/파괴는 _virtualize_local_grid()가 뷰포트 기준으로 담당한다."""
+        if cols is None:
+            width = self.canvas.winfo_width()
+            cols = calc_cols(width, CARD_WIDTH, min_cols=1)
+        self.local_cols = cols
+        for w in self.local_live_cards.values():
+            w.destroy()
+        self.local_live_cards.clear()
+
+        n = len(self.local_all_items)
+        rows = (n + cols - 1) // cols if cols else 0
+        total_h = rows * self.LOCAL_CARD_H
+        width = self.canvas.winfo_width() or (cols * CARD_WIDTH)
+        self.local_frame.configure(width=width, height=total_h)
+        self.canvas.configure(scrollregion=(0, 0, width, total_h))
+        self.canvas.coords(self.canvas_window, self.canvas.winfo_width() / 2, 0)
+        self._virtualize_local_grid()
+
+    def _schedule_local_virtualize(self):
+        # 스크롤이 실제로 멎었을 때만 카드를 갱신한다 — 상세페이지 미리보기
+        # 가상 스크롤과 동일한 이유(스크롤마다 즉시 갱신하면 그만큼의 썸네일
+        # 네트워크/파일 요청이 한꺼번에 몰려 오히려 더 끊긴다).
+        if self._local_scroll_job is not None:
+            try:
+                self.after_cancel(self._local_scroll_job)
+            except Exception:
+                pass
+        self._local_scroll_job = self.after(200, self._virtualize_local_grid)
+
+    def _virtualize_local_grid(self):
+        self._local_scroll_job = None
+        if self.mode.get() != "local" or not self.local_all_items:
+            return
+        cols = self.local_cols or 1
+        top_frac, bottom_frac = self.canvas.yview()
+        n = len(self.local_all_items)
+        rows = (n + cols - 1) // cols
+        first_row = max(0, int(top_frac * rows))
+        last_row = min(rows - 1, int(bottom_frac * rows))
+        want_indices = set()
+        for r in range(first_row, last_row + 1):
+            for c in range(cols):
+                idx = r * cols + c
+                if idx < n:
+                    want_indices.add(idx)
+
+        for idx in list(self.local_live_cards.keys()):
+            if idx not in want_indices:
+                self.local_live_cards.pop(idx).destroy()
+
+        for idx in want_indices:
+            if idx in self.local_live_cards:
+                continue
+            it = self.local_all_items[idx]
+            r, c = divmod(idx, cols)
+            card = self._make_card(self.local_frame, it, frozenset(), 0)
+            card.place(x=c * CARD_WIDTH + 8, y=r * self.LOCAL_CARD_H + 8)
+            self.local_live_cards[idx] = card
 
     def _fit_window_to_content(self):
         """카드 그리드 전체가 세로로 보이도록 창 높이를 콘텐츠에 맞춘다.
@@ -1227,7 +1370,7 @@ class DcconApp(tk.Tk):
         target_w = max(int(min(needed_w, screen_w - 40)), 900)
         self.geometry(f"{target_w}x{target_h}")
 
-    def _make_card(self, parent, item, local_titles: set = frozenset()):
+    def _make_card(self, parent, item, local_titles: set = frozenset(), gen: int = 0):
         # 이미 저장 폴더에 다운로드되어 있는 디시콘인지 — 다운로드 시
         # 폴더명이 sanitize_filename(제목)이므로 같은 변환을 거쳐 비교한다.
         # local_titles 는 카드 생성 시점에 아직 계산 전(빈 집합)일 수 있다
@@ -1290,9 +1433,18 @@ class DcconApp(tk.Tk):
             seller.configure(bg=bg)
 
         def on_enter(_e):
+            # 스크롤 중에는(bind_mousewheel이 canvas._scrolling을 세팅)
+            # 포인터 아래로 카드가 빠르게 스쳐 지나가며 매 프레임 hover
+            # configure가 반복 호출되어 메인 스레드가 밀리는 원인이 됐다
+            # (카드 수가 많은 인기 100위 목록에서 두드러짐). 스크롤 중엔
+            # hover 갱신을 건너뛴다.
+            if getattr(self.canvas, "_scrolling", False):
+                return
             _set_hover(True)
 
         def on_leave(_e):
+            if getattr(self.canvas, "_scrolling", False):
+                return
             # 자식 위젯 사이를 오갈 때 발생하는 Leave 로 깜빡이지 않도록,
             # 포인터가 실제로 카드 밖으로 나갔는지 확인.
             x, y = card.winfo_pointerxy()
@@ -1327,21 +1479,34 @@ class DcconApp(tk.Tk):
             return card
 
         def load_thumb():
+            # 파일 읽기/디코딩/리사이즈(PIL 순수 연산)까지만 워커 스레드에서
+            # 하고, ImageTk.PhotoImage 생성은 반드시 메인 스레드(self.after)
+            # 에서 한다 — Tk/Tcl은 스레드 세이프하지 않아 여러 워커에서
+            # 동시에 Tk 이미지 객체를 만드는 것은 정의되지 않은 동작이라,
+            # 카드 수가 많을 때(인기 100위 등) 응답 없음의 잠재 원인이었다.
             try:
                 data = _read_image_bytes(item["img"], self.api)
                 im = Image.open(io.BytesIO(data))
                 im.thumbnail(THUMB_SIZE)
-                tkim = ImageTk.PhotoImage(im)
-                self._cache_thumb(item["img"], tkim)
-                def apply():
-                    if thumb.winfo_exists():
-                        thumb.configure(image=tkim, text="")
-                self.after(0, apply)
+                im.load()  # BytesIO/파일 핸들이 살아있는 동안 디코딩을 끝냄
             except Exception:
                 def fail():
-                    if thumb.winfo_exists():
-                        thumb.configure(text="✕", fg="#d0d0d0")
+                    if gen != self._render_gen or not thumb.winfo_exists():
+                        return
+                    thumb.configure(text="✕", fg="#d0d0d0")
                 self.after(0, fail)
+                return
+
+            def apply():
+                # gen이 현재 렌더 세대와 다르면 이미 다른 화면으로 전환된
+                # 뒤 executor 큐에 남아있던 작업이 뒤늦게 끝난 것 — 화면에
+                # 없는 카드에 손댈 필요가 없으니 조용히 버린다.
+                if gen != self._render_gen or not thumb.winfo_exists():
+                    return
+                tkim = ImageTk.PhotoImage(im)
+                self._cache_thumb(item["img"], tkim)
+                thumb.configure(image=tkim, text="")
+            self.after(0, apply)
         self.executor.submit(load_thumb)
         return card
 
@@ -1367,8 +1532,9 @@ class DetailDialog(tk.Toplevel):
         self.preview_cols = 0
         self.preview_canvas = None
         self.preview_inner = None
-        self.preview_cache = {}   # url -> ImageTk.PhotoImage, 리사이즈 재배치 시 재다운로드 방지
+        self.preview_cache = {}   # url -> ImageTk.PhotoImage, 재스크롤 시 재다운로드 방지
         self.raw_cache = {}       # url/경로 -> 원본 bytes, 클립보드 복사용(원본 화질 필요)
+        self._preview_inflight = {}  # url -> [대기 중인 label...], 진행 중 요청 중복 방지
 
         ttk.Label(self, text="불러오는 중...", padding=20).pack()
         threading.Thread(target=self._load, daemon=True).start()
@@ -1500,53 +1666,159 @@ class DetailDialog(tk.Toplevel):
             tb.Button(bar, text=f"전체 {len(self.detail['urls'])}개 다운로드", bootstyle="primary",
                       command=self.start_download).pack(side="left", padx=(8, 0))
 
-        # 미리보기 그리드
+        # 미리보기 그리드 — 가상 스크롤(virtualized): 실제로는 뷰포트에
+        # 보이는 행 근처의 카드만 생성하고, 스크롤로 벗어난 카드는 파괴한다.
+        # 디시콘 패키지 중에는 이미지가 126개(실측)까지도 있는데, 전부
+        # 동기로 위젯을 만들면 tkinter 위젯 생성 자체가 1초 넘게 걸려
+        # 그동안 메인 스레드가 막힌다(실측 1.4초) — 상세페이지가 "로딩 중
+        # 튕긴다"고 느껴지던 원인이었다. 화면에 실제로 보이는 15~20개
+        # 남짓만 유지하면 카드 수가 몇 개든 렌더링 비용이 일정해진다.
         prev_frame = ttk.Frame(self, padding=10); prev_frame.pack(fill="both", expand=True)
         canvas = tk.Canvas(prev_frame, highlightthickness=0)
         vbar = ttk.Scrollbar(prev_frame, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         vbar.pack(side="right", fill="y")
-        inner = ttk.Frame(canvas)
+        # inner는 스크롤 가능한 전체 영역 크기(행 수 x 셀 높이)만 차지하는
+        # 빈 컨테이너 — 카드는 이 안에 place()로 좌표를 직접 지정해 배치한다.
+        inner = tk.Frame(canvas, bg=COL_BG)
         cwin = canvas.create_window((0, 0), window=inner, anchor="n")
-        inner.bind("<Configure>", lambda e: update_scrollregion(canvas))
-        canvas.bind("<Configure>", lambda e: self._on_preview_resize(e, cwin))
-        bind_mousewheel(canvas)
 
         self.preview_canvas = canvas
         self.preview_inner = inner
+        self.preview_cwin = cwin
         self.preview_urls = self.detail["urls"]
-        self._layout_preview_grid()
+        self.preview_live_cards = {}   # index -> (card, box, lbl) 현재 화면에 존재하는 카드
+        self._preview_scroll_job = None
 
-    def _on_preview_resize(self, event, cwin):
+        def _on_yscroll(*args):
+            # 스크롤바 드래그로 인한 이동. yview_scroll(마우스 휠)과 달리
+            # yscrollcommand 콜백을 자동으로 안 태우므로 직접 재계산을 건다.
+            canvas.yview(*args)
+            self._schedule_preview_virtualize()
+        vbar.configure(command=_on_yscroll)
+        # 마우스 휠 스크롤(bind_mousewheel -> yview_scroll)은 캔버스 콘텐츠
+        # 이동 시 yscrollcommand을 Tk가 자동으로 호출해주므로 여기서 함께
+        # virtualize를 트리거한다 — 별도로 <MouseWheel>을 또 바인딩할 필요
+        # 없음.
+        canvas.configure(yscrollcommand=lambda *a: (vbar.set(*a), self._schedule_preview_virtualize()))
+        bind_mousewheel(canvas)
+        canvas.bind("<Configure>", lambda e: self._on_preview_resize(e))
+
+        self.update_idletasks()
+        self._recalc_preview_layout()
+
+    def _on_preview_resize(self, event):
         # 미리보기 그리드를 캔버스 가로 중앙으로 이동
-        self.preview_canvas.coords(cwin, event.width / 2, 0)
+        self.preview_canvas.coords(self.preview_cwin, event.width / 2, 0)
         new_cols = calc_cols(event.width, PREVIEW_CELL_WIDTH, min_cols=1)
         if new_cols != self.preview_cols:
-            self._layout_preview_grid(new_cols)
+            self._recalc_preview_layout(new_cols)
+        else:
+            self._schedule_preview_virtualize()
 
-    def _layout_preview_grid(self, cols: int = None):
+    PREVIEW_CELL_H = 104 + 8 + 12  # box 높이 + pack 여백 + grid pady*2 근사
+
+    def _recalc_preview_layout(self, cols: int = None):
+        """전체 스크롤 영역(행 수 * 셀 높이)만 다시 계산하고, 실제 카드
+        재배치는 virtualize()에 맡긴다."""
         if cols is None:
             width = self.preview_canvas.winfo_width()
             cols = calc_cols(width, PREVIEW_CELL_WIDTH, min_cols=1)
         self.preview_cols = cols
-        for w in self.preview_inner.winfo_children():
-            w.destroy()
-        for i, u in enumerate(self.preview_urls):
-            r, c = divmod(i, cols)
-            # 테두리 카드 — 이모티콘마다 구분되는 칸
+        for card, box, lbl in self.preview_live_cards.values():
+            card.destroy()
+        self.preview_live_cards.clear()
+
+        n = len(self.preview_urls)
+        rows = (n + cols - 1) // cols if cols else 0
+        total_h = rows * self.PREVIEW_CELL_H
+        width = self.preview_canvas.winfo_width() or (cols * PREVIEW_CELL_WIDTH)
+        self.preview_inner.configure(width=width, height=total_h)
+        self.preview_canvas.configure(scrollregion=(0, 0, width, total_h))
+        self._virtualize_preview()
+
+    # 스크롤이 멎고 이 시간(ms) 동안 추가 스크롤이 없을 때만 카드를
+    # 갱신한다. 짧으면(예: 50ms) 휠을 굴리는 도중에도 매 스크롤 스텝마다
+    # 새 카드가 생성되며 그만큼 새 네트워크 이미지 요청이 스레드풀에
+    # 쏟아져 들어가 오히려 더 끊기는 현상이 있었다(실측: 스크롤 중 최대
+    # 1.3초 지연) — 스크롤이 실제로 멈춘 뒤에만 한 번 로드하도록 넉넉히 늦춘다.
+    PREVIEW_SCROLL_DEBOUNCE_MS = 200
+
+    def _schedule_preview_virtualize(self):
+        if self._preview_scroll_job is not None:
+            try:
+                self.after_cancel(self._preview_scroll_job)
+            except Exception:
+                pass
+        self._preview_scroll_job = self.after(self.PREVIEW_SCROLL_DEBOUNCE_MS, self._virtualize_preview)
+
+    # 뷰포트 바로 아래(스크롤하면 다음에 보일 구간)의 이미지를 카드가
+    # 만들어지기 전에 미리 캐싱해두는 행 수. 카드 위젯 자체는 여전히
+    # 뷰포트에 보이는 만큼만 만든다(위젯 생성은 여기 포함 안 됨) — 126개
+    # 전체를 한꺼번에 프리페치하면 완료까지 3.4초(실측)나 걸려 정작 빠르게
+    # 스크롤하는 경우엔 못 따라가고, 안 볼 이미지까지 트래픽만 낭비한다.
+    # 딱 다음 화면 분량만 미리 받아두면 "스크롤하는 순간 캐시에 이미 있어
+    # 바로 뜨는" 체감 효과를 트래픽 낭비 없이 얻을 수 있다.
+    PREVIEW_PREFETCH_ROWS = 2
+
+    def _virtualize_preview(self):
+        self._preview_scroll_job = None
+        if not self.winfo_exists() or not self.preview_urls:
+            return
+        canvas = self.preview_canvas
+        cols = self.preview_cols or 1
+        top_frac, bottom_frac = canvas.yview()
+        n = len(self.preview_urls)
+        rows = (n + cols - 1) // cols
+        total_h = max(1, rows * self.PREVIEW_CELL_H)
+        first_row = max(0, int(top_frac * rows))
+        last_row = min(rows - 1, int(bottom_frac * rows))
+
+        # 카드(위젯)는 뷰포트에 실제로 보이는 행만 — 위젯 생성 비용은
+        # 여전히 최소로 유지한다.
+        want_indices = set()
+        for r in range(first_row, last_row + 1):
+            for c in range(cols):
+                idx = r * cols + c
+                if idx < n:
+                    want_indices.add(idx)
+
+        # 더 이상 필요 없는 카드 파괴
+        for idx in list(self.preview_live_cards.keys()):
+            if idx not in want_indices:
+                card, box, lbl = self.preview_live_cards.pop(idx)
+                card.destroy()
+
+        # 새로 필요한 카드만 생성
+        for idx in want_indices:
+            if idx in self.preview_live_cards:
+                continue
+            u = self.preview_urls[idx]
+            r, c = divmod(idx, cols)
             card = tk.Frame(self.preview_inner, bg=COL_BG, bd=0, highlightthickness=1,
                             highlightbackground=COL_BORDER, highlightcolor=COL_BORDER)
-            card.grid(row=r, column=c, padx=6, pady=6, sticky="n")
+            card.place(x=c * PREVIEW_CELL_WIDTH, y=r * self.PREVIEW_CELL_H,
+                       width=PREVIEW_CELL_WIDTH, height=self.PREVIEW_CELL_H)
             box = tk.Frame(card, width=104, height=104, bg=COL_THUMB_BG)
             box.pack(padx=4, pady=4)
             box.pack_propagate(False)
             lbl = tk.Label(box, text="…", bg=COL_THUMB_BG, fg="#c4c4c4")
             lbl.pack(expand=True)
 
-            name = "메인 이미지" if i == 0 else f"icon_{i}"
-            self._wire_preview_cell(card, box, lbl, i, u, name)
+            name = "메인 이미지" if idx == 0 else f"icon_{idx}"
+            self._wire_preview_cell(card, box, lbl, idx, u, name)
             self._load_preview(u, lbl)
+            self.preview_live_cards[idx] = (card, box, lbl)
+
+        # 다음 스크롤에 보일 구간(뷰포트 아래로 PREVIEW_PREFETCH_ROWS줄)의
+        # 이미지를 카드 없이 미리 캐싱해둔다 — 그 지점까지 스크롤했을 때
+        # 카드가 만들어지자마자 캐시 히트로 바로 표시되게 하기 위함.
+        prefetch_last_row = min(rows - 1, last_row + self.PREVIEW_PREFETCH_ROWS)
+        for r in range(last_row + 1, prefetch_last_row + 1):
+            for c in range(cols):
+                idx = r * cols + c
+                if idx < n and idx not in self.preview_live_cards:
+                    self._load_preview(self.preview_urls[idx])
 
     def _wire_preview_cell(self, card, box, lbl, index, url, name):
         """미리보기 카드에 호버 강조 + 우클릭 다운로드 메뉴를 연결."""
@@ -1606,51 +1878,94 @@ class DetailDialog(tk.Toplevel):
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _load_preview(self, url, label):
+    def _load_preview(self, url, label=None):
+        """이미지를 로드해 preview_cache에 채우고, label이 있으면 화면에도
+        적용한다. label=None으로 호출하면(프리페치) 카드 위젯 없이 캐시만
+        미리 채워둔다 — 다음 스크롤 시 카드가 만들어지자마자 캐시 히트로
+        바로 표시되게 하기 위함."""
         cached = self.preview_cache.get(url)
         if cached is not None:
-            self._apply_preview(label, cached)
+            if label is not None:
+                self._apply_preview(label, cached)
             return
+        if url in self._preview_inflight:
+            # 이미 다른 요청(가시 카드 또는 프리페치)이 같은 url을 받는
+            # 중 — 중복 다운로드하지 않는다. label이 있으면 완료 후 적용될
+            # 수 있게 대기 목록에 추가.
+            if label is not None:
+                self._preview_inflight[url].append(label)
+            return
+        self._preview_inflight[url] = [label] if label is not None else []
 
         def task():
+            # 파일 읽기 + PIL 디코딩/리사이즈(순수 연산)까지만 워커
+            # 스레드에서 하고, ImageTk.PhotoImage 생성은 메인 카드
+            # 썸네일(load_thumb)과 동일한 이유로 메인 스레드로 넘긴다 —
+            # 상세페이지 이미지가 많으면(디시콘 100개 넘는 패키지도 있음)
+            # 여러 워커가 동시에 Tk 이미지 객체를 만들며 상세창이 로딩
+            # 중 멈추던 원인이었다.
             try:
                 data = _read_image_bytes(url, self.master_app.api)
                 # 리사이즈된 미리보기(preview_cache)와 별개로 원본 bytes를
                 # 캐시해둔다 — 클립보드 복사 시 100x100로 축소된 화질이
                 # 아니라 원본 화질/원본 GIF 프레임 전체가 필요하기 때문.
                 self.raw_cache[url] = data
-                entry = self._build_preview_entry(data)
-                self.preview_cache[url] = entry
-                self.after(0, lambda: self._apply_preview(label, entry))
+                frames_data = self._decode_preview_frames(data)
             except Exception:
-                pass
+                self.after(0, lambda: self._preview_inflight.pop(url, None))
+                return
+            self.after(0, lambda: self._finish_preview(url, frames_data))
         self.master_app.executor.submit(task)
 
-    def _build_preview_entry(self, data):
-        """미리보기용 이미지 엔트리 생성.
+    @staticmethod
+    def _decode_preview_frames(data):
+        """미리보기용 PIL 프레임 목록 디코딩 (워커 스레드, Tk 객체 생성 없음).
 
-        - 정적: ("static", PhotoImage)
-        - 움짤(GIF 다중 프레임): ("anim", [PhotoImage...], [duration_ms...])
+        - 정적: ("static", [PIL.Image])
+        - 움짤(GIF 다중 프레임): ("anim", [PIL.Image...], [duration_ms...])
         """
         im = Image.open(io.BytesIO(data))
         animated = getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1
         if not animated:
             frame = im.convert("RGBA")
             frame.thumbnail((100, 100))
-            ph = ImageTk.PhotoImage(frame)
-            self.image_refs.append(ph)
-            return ("static", ph)
+            return ("static", [frame])
 
         frames, durations = [], []
         for fr in ImageSequence.Iterator(im):
             f = fr.convert("RGBA")
             f.thumbnail((100, 100))
-            ph = ImageTk.PhotoImage(f)
-            self.image_refs.append(ph)
-            frames.append(ph)
+            frames.append(f)
             # 너무 빠른 프레임은 40ms 하한으로 (일부 GIF은 duration=0)
             durations.append(max(40, int(fr.info.get("duration", 100) or 100)))
         return ("anim", frames, durations)
+
+    def _finish_preview(self, url, frames_data):
+        """메인 스레드에서 PIL 프레임을 ImageTk.PhotoImage로 변환해 캐시에
+        채우고, 그 사이 이 url을 기다리던 라벨(들)에 적용한다.
+
+        프리페치(label=None으로 요청)와 실제로 화면에 보이는 카드가 같은
+        url을 동시에 기다릴 수 있어 _preview_inflight에 대기 라벨 목록을
+        모아둔다. label.winfo_exists()로 "이 카드가 지금도 화면에
+        존재하는가"를 판별해, 이미 스크롤로 사라진 카드는 조용히 건너뛴다.
+        """
+        waiters = self._preview_inflight.pop(url, [])
+        kind = frames_data[0]
+        if kind == "static":
+            ph = ImageTk.PhotoImage(frames_data[1][0])
+            self.image_refs.append(ph)
+            entry = ("static", ph)
+        else:
+            phs = []
+            for f in frames_data[1]:
+                ph = ImageTk.PhotoImage(f)
+                self.image_refs.append(ph)
+                phs.append(ph)
+            entry = ("anim", phs, frames_data[2])
+        self.preview_cache[url] = entry
+        for label in waiters:
+            if label.winfo_exists():
+                self._apply_preview(label, entry)
 
     def _apply_preview(self, label, entry):
         """엔트리를 라벨에 적용. 움짤이면 프레임을 순환 재생한다."""
@@ -1703,14 +2018,25 @@ class DetailDialog(tk.Toplevel):
                 except Exception as e:
                     failed.append(i)
                 done += 1
-                self.after(0, lambda d=done: self.progress.configure(value=d))
+                self._safe_after(lambda d=done: self.progress.configure(value=d))
                 self.master_app.after(0, self.master_app.set_status, f"{done}/{len(urls)} 받는 중...")
             self.master_app.after(0, self._on_finish, out, failed)
 
         threading.Thread(target=task, daemon=True).start()
 
+    def _safe_after(self, callback):
+        """상세창이 다운로드 도중 닫혀도(백그라운드 스레드는 계속 진행)
+        이미 파괴된 위젯에 접근해 TclError가 나지 않도록 winfo_exists를
+        확인한 뒤에만 콜백을 실행한다."""
+        def guarded():
+            if self.winfo_exists():
+                callback()
+        self.after(0, guarded)
+
     def _on_finish(self, out, failed):
         self.master_app.set_status(f"완료: {out}")
+        if not self.winfo_exists():
+            return
         if failed:
             msg = f"일부 실패 (실패 인덱스: {failed})\n저장 위치:\n{out}\n\n폴더를 열까요?"
         else:
