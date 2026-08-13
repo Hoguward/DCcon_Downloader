@@ -347,7 +347,11 @@ body {
 }
 .card:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-2px); }
 .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.card.saved { border-color: var(--good); background: var(--good-soft); }
+/* 보유(저장됨) 표시가 연한 초록 테두리+10px 텍스트뿐이라 눈에 잘 안
+   띈다는 피드백으로, 상세페이지 rank-badge와 같은 "배경색 있는 배지"
+   패턴으로 바꿨다 — 테두리 강조는 보조 신호로 유지하고, 실제 식별은
+   썸네일 위 고정 배지(.saved-badge)가 맡는다. */
+.card.saved { border-color: var(--good); }
 .card.saved:hover { border-color: var(--accent); background: var(--accent-soft); }
 
 .card .thumb-box {
@@ -389,15 +393,23 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.card .saved-pill {
+.saved-badge {
   display: none;
-  margin-top: 4px;
-  font-size: 10px;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--good);
+  color: #fff;
+  font-size: 12px;
   font-weight: 700;
-  color: var(--good);
-  letter-spacing: 0.02em;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
-.card.saved .saved-pill { display: inline-block; }
+.card.saved .saved-badge { display: flex; }
 
 .empty-state {
   padding: 60px 20px;
@@ -827,10 +839,10 @@ function renderGrid(items) {
       <div class="thumb-box">
         <img src="${proxiedImage(item.img)}" alt="" loading="lazy">
         ${item.rank ? `<span class="rank-badge">${escapeHtml(String(item.rank))}</span>` : ""}
+        <span class="saved-badge" title="보유 중">✓</span>
       </div>
       <div class="title">${escapeHtml(item.title)}</div>
       <div class="seller">${escapeHtml(item.nick_name)}</div>
-      <span class="saved-pill">저장됨</span>
     `;
     card.addEventListener("click", () => openDetail(item));
     card.addEventListener("contextmenu", (e) => {
@@ -1115,7 +1127,7 @@ function sanitizeFilename(name) {
 function refreshSavedBadge(packageIdx) {
   // 방금 다운로드한 항목이 지금 화면에 카드로 떠 있으면(같은 목록에서
   // 바로 다운로드한 경우) 화면을 다시 불러오지 않고도 그 카드에만
-  // "저장됨" 표시를 즉시 붙인다. saved-pill은 항상 DOM에 있고
+  // 보유 표시를 즉시 붙인다. saved-badge는 항상 DOM에 있고
   // .card.saved 일 때만 CSS로 보이므로 클래스 토글만으로 충분하다.
   const card = document.querySelector(`.card[data-package-idx="${CSS.escape(String(packageIdx))}"]`);
   if (card) card.classList.add("saved");
