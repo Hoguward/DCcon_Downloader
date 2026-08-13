@@ -88,8 +88,7 @@ body {
 .topbar h1 { font-size: 17px; font-weight: 700; margin: 0; }
 .topbar .tagline { font-size: 12.5px; opacity: 0.85; }
 
-.theme-toggle {
-  margin-left: auto;
+.theme-toggle, .about-btn {
   width: 34px;
   height: 34px;
   border-radius: 50%;
@@ -103,8 +102,9 @@ body {
   font-size: 16px;
   flex-shrink: 0;
 }
-.theme-toggle:hover { background: rgba(255,255,255,0.22); }
-.theme-toggle:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.theme-toggle { margin-left: auto; }
+.theme-toggle:hover, .about-btn:hover { background: rgba(255,255,255,0.22); }
+.theme-toggle:focus-visible, .about-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 .toolbar {
   background: var(--surface);
@@ -427,6 +427,18 @@ body {
 .pager button:disabled { opacity: 0.4; cursor: default; }
 .pager span { font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 
+/* ---------- About 모달 (비공식 고지) ---------- */
+.about-body {
+  padding: 18px 20px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+.about-body p { margin: 0 0 10px; }
+.about-body p:last-child { margin-bottom: 0; }
+.about-body a { color: var(--accent); text-decoration: none; }
+.about-body a:hover { text-decoration: underline; }
+
 /* ---------- 상세 모달 ---------- */
 .modal-backdrop {
   position: fixed; inset: 0;
@@ -569,7 +581,8 @@ body {
 <body>
 <header class="topbar">
   <h1>DCcon Downloader</h1>
-  <span class="tagline">디시콘 일괄 다운로더 · Web</span>
+  <span class="tagline">디시콘 일괄 다운로더</span>
+  <button type="button" class="about-btn" id="about-btn" aria-label="프로그램 정보 및 저작권 안내">ⓘ</button>
   <button type="button" class="theme-toggle" id="theme-toggle" aria-label="어두운 화면으로 전환">🌙</button>
 </header>
 
@@ -645,6 +658,28 @@ body {
   <button type="button" class="toast-dismiss" id="toast-dismiss-btn" aria-label="닫기">✕</button>
 </div>
 
+<div class="modal-backdrop" id="about-backdrop" hidden>
+  <div class="modal" style="width: min(440px, 100%);" role="dialog" aria-modal="true" aria-labelledby="about-title">
+    <div class="modal-head">
+      <h2 id="about-title">DCcon Downloader</h2>
+      <button class="close-btn" id="about-close" aria-label="닫기">✕</button>
+    </div>
+    <div class="about-body">
+      <p>
+        DCcon Downloader는 <strong>디시인사이드(dcinside.com)와 무관한 비공식 개인 프로젝트</strong>입니다.
+        "디시인사이드", "디시콘" 등의 명칭 및 상표에 대한 권리는 디시인사이드에 있습니다.
+      </p>
+      <p>
+        이 프로그램으로 저장한 이미지의 저작권은 각 디시콘 제작자에게 있으며,
+        <strong>개인 소장 용도로만</strong> 사용해 주세요.
+      </p>
+      <p>
+        소스코드: <a href="https://github.com/Hoguward/DCcon_Downloader" target="_blank" rel="noopener">github.com/Hoguward/DCcon_Downloader</a>
+      </p>
+    </div>
+  </div>
+</div>
+
 <script>
 // ---------- 설정 ----------
 // PyWebView에서는 프론트엔드와 API가 같은 로컬 서버(main.py가 띄우는
@@ -676,6 +711,17 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
   syncThemeButton();
 });
 syncThemeButton();
+
+// ---------- About(비공식/저작권 고지) ----------
+document.getElementById("about-btn").addEventListener("click", () => {
+  document.getElementById("about-backdrop").hidden = false;
+});
+document.getElementById("about-close").addEventListener("click", () => {
+  document.getElementById("about-backdrop").hidden = true;
+});
+document.getElementById("about-backdrop").addEventListener("click", (e) => {
+  if (e.target.id === "about-backdrop") e.target.hidden = true;
+});
 
 // ---------- 상태 ----------
 let state = { mode: "top", period: "day", page: 1, lastPage: 1, keyword: "", category: "title" };
@@ -1240,7 +1286,9 @@ document.getElementById("modal-backdrop").addEventListener("click", (e) => {
   if (e.target.id === "modal-backdrop") e.target.hidden = true;
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") document.getElementById("modal-backdrop").hidden = true;
+  if (e.key !== "Escape") return;
+  document.getElementById("modal-backdrop").hidden = true;
+  document.getElementById("about-backdrop").hidden = true;
 });
 
 // ---------- 탭 / 검색 / 페이지네이션 ----------
