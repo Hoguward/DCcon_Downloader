@@ -79,5 +79,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='icon.ico',       # 아이콘 파일이 있으면 주석 해제
+    icon='assets/icon.ico',
 )
